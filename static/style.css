@@ -60,6 +60,10 @@ body{background:var(--bg);color:var(--fg);
   background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:4px 9px;
   color:var(--fg);align-self:flex-start;max-width:100%}
 .chip.file{cursor:pointer}
+.chips.outs{margin-top:6px}
+.chip.out{background:var(--bg3)}
+.chip.out:hover{border-color:var(--accent2)}
+.chip.out .v{color:var(--accent2)}
 .chip .v{color:var(--accent);font-weight:600}
 .chip.err{border-color:var(--err)}
 .chip .p{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -159,6 +163,25 @@ body{background:var(--bg);color:var(--fg);
 .ctx-item.muted:hover{background:none}
 
 .scrim{position:fixed;inset:0;background:#0007;z-index:30}
+
+/* claude model/mode control bar (above the prompt box) */
+.claude-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:8px 12px;border-top:1px solid var(--line);background:var(--bg2)}
+.cb-group{display:flex;align-items:center;gap:7px}
+.cb-lbl{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+#modelSel{background:var(--bg);color:var(--fg);border:1px solid var(--line);
+  border-radius:8px;padding:6px 9px;font:inherit;cursor:pointer}
+#modelSel:focus{outline:none;border-color:var(--accent2)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--bg)}
+.seg-btn{background:none;color:var(--dim);border:0;border-left:1px solid var(--line);
+  padding:6px 11px;cursor:pointer;font:inherit;white-space:nowrap}
+.seg-btn:first-child{border-left:0}
+.seg-btn:hover{color:var(--fg);background:var(--bg3)}
+.seg-btn.active{background:var(--accent);color:#1a1200;font-weight:600}
+.cb-msg{font-size:12px;color:var(--dim);margin-left:auto;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.cb-msg.err{color:var(--err)}
+@media(max-width:760px){.cb-msg{width:100%;margin-left:0;order:9}}
 
 .only-mobile{display:none}
 @media(max-width:760px){

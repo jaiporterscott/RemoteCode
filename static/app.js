@@ -67,7 +67,7 @@ function selectSession(id) {
   $("#curAgent").textContent = s ? s.agent : "";
   applyCaps();
   document.querySelectorAll("#sessionList li").forEach(li => li.classList.toggle("active", li.dataset.id === id));
-  if (curChat) { showChat(); startStream(); loadFiles(); }
+  if (curChat) { showChat(); startStream(); loadFiles(); refreshClaudeBar(); }
   else { setFiles([]); showTerm(); }   // non-chat agents: terminal is the view
 }
 function applyCaps() {
@@ -75,6 +75,7 @@ function applyCaps() {
   $("#renameBtn").classList.toggle("hidden", curReadonly);
   $("#filesBtn").classList.toggle("hidden", !curChat);
   $("#modeBtn").classList.toggle("hidden", !curChat || curReadonly);
+  $("#claudeBar").classList.toggle("hidden", !curChat || curReadonly);
   const noInput = curReadonly || !curChat;
   $("#promptInput").disabled = noInput;
   $("#sendBtn").disabled = noInput;
@@ -82,6 +83,45 @@ function applyCaps() {
     ? "Read-only — this session isn't in tmux, so it can't be driven from here."
     : "Type a prompt…  (Enter to send, Shift+Enter for newline)";
 }
+
+/* ---------- claude model / mode controls ---------- */
+function setActiveMode(m) {
+  document.querySelectorAll("#modeSeg .seg-btn").forEach(b =>
+    b.classList.toggle("active", b.dataset.mode === m));
+}
+function cbFlash(t, err) {
+  const e = $("#cbMsg"); e.textContent = t || ""; e.className = "cb-msg" + (err ? " err" : "");
+  if (t) setTimeout(() => { if (e.textContent === t) { e.textContent = ""; e.className = "cb-msg"; } }, 2600);
+}
+async function refreshClaudeBar() {
+  if (!cur || !curChat || curReadonly) return;
+  setActiveMode(null); cbFlash("");
+  try { const d = await j(`/api/sessions/${encodeURIComponent(cur)}/claude`); setActiveMode(d.mode); }
+  catch (e) { /* non-claude or unreachable — bar simply shows no active mode */ }
+}
+$("#modelSel").addEventListener("change", async e => {
+  if (!cur) return;
+  const m = e.target.value;
+  try {
+    const d = await j(`/api/sessions/${encodeURIComponent(cur)}/model`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: m }) });
+    cbFlash("model → " + m + (d && d.savesDefault ? " · saved as default" : ""));
+  } catch (err) { cbFlash("model failed: " + err.message, true); }
+});
+document.querySelectorAll("#modeSeg .seg-btn").forEach(b => {
+  b.addEventListener("click", async () => {
+    if (!cur) return;
+    const target = b.dataset.mode;
+    cbFlash("switching…");
+    try {
+      const d = await j(`/api/sessions/${encodeURIComponent(cur)}/mode`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: target }) });
+      setActiveMode(d.mode);
+      cbFlash(d.reached ? "mode → " + d.mode
+        : "couldn't reach " + target + (d.mode ? " (still " + d.mode + ")" : ""), !d.reached);
+    } catch (err) { cbFlash("mode failed: " + err.message, true); }
+  });
+});
 
 /* ---------- stream / chat ---------- */
 function startStream() {
@@ -117,7 +157,29 @@ function addItem(it) {
     for (const c of it.chips) wrap.append(chipEl(c));
     m.append(wrap);
   }
+  if (it.outputs && it.outputs.length) {                // artifacts a command produced
+    const wrap = el("div", "chips outs");
+    for (const o of it.outputs) wrap.append(outChipEl(o));
+    m.append(wrap);
+  }
   $("#chat").append(m);
+}
+const MODEL_EXT_RE = /^(glb|gltf|obj|stl|ply|usdz)$/i;
+function outChipEl(o) {
+  const wrap = el("div");
+  const isModel = MODEL_EXT_RE.test(o.ext || "");
+  const isImg = IMG_RE.test(o.name || "");
+  const e = el("div", "chip file out");
+  e.append(el("span", "v", isModel ? "🧊 3D" : (isImg ? "🖼 view" : "open")));
+  e.append(el("span", "p", o.name));
+  if (o.size) e.append(el("span", "sz", human(o.size)));
+  e.onclick = () => preview(o.path);
+  wrap.append(e);
+  if (isImg) {                                          // thumbnail for image outputs
+    const img = el("img", "chip-thumb"); img.src = rawUrl(o.path); img.loading = "lazy";
+    img.onclick = () => preview(o.path); wrap.append(img);
+  }
+  return wrap;
 }
 function chipEl(c) {
   const wrap = el("div");

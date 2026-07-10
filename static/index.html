@@ -38,6 +38,29 @@
 
     <section id="chatWrap" class="pane">
       <div id="chat"></div>
+      <div id="claudeBar" class="claude-bar hidden">
+        <label class="cb-group">
+          <span class="cb-lbl">Model</span>
+          <select id="modelSel">
+            <option value="default">Default</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+            <option value="opusplan">Opus Plan</option>
+            <option value="haiku">Haiku</option>
+            <option value="fable">Fable</option>
+          </select>
+        </label>
+        <div class="cb-group">
+          <span class="cb-lbl">Mode</span>
+          <div id="modeSeg" class="seg">
+            <button type="button" class="seg-btn" data-mode="default">Manual</button>
+            <button type="button" class="seg-btn" data-mode="acceptEdits">Accept edits</button>
+            <button type="button" class="seg-btn" data-mode="plan">Plan</button>
+            <button type="button" class="seg-btn" data-mode="auto">Auto</button>
+          </div>
+        </div>
+        <span id="cbMsg" class="cb-msg"></span>
+      </div>
       <form id="promptForm">
         <textarea id="promptInput" rows="1" placeholder="Type a prompt…  (Enter to send, Shift+Enter for newline)"></textarea>
         <button id="sendBtn" class="btn primary" type="submit">Send</button>

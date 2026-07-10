@@ -8,7 +8,7 @@ files-changed view is rendered from Claude's own transcript.
 
 Binds 127.0.0.1:7070 by default with HTTP basic-auth built in.
 """
-import os, re, json, glob, stat, base64, asyncio, secrets, subprocess, threading
+import os, re, time, json, glob, stat, base64, asyncio, secrets, subprocess, threading
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -400,6 +400,98 @@ def api_prompt(sess: str, body: dict = Body(...)):
     return {"ok": True}
 
 
+# ---- Claude Code runtime controls: model + permission mode via tmux keys ------
+# Model is set deterministically with `/config model=<alias>` (Claude Code >=2.1.182,
+# verified on 2.1.206). Permission mode has no direct command — it cycles on
+# Shift+Tab (tmux key name "BTab"). The cycle length varies per account (auto /
+# bypass modes may be present), so rather than counting presses we read the
+# on-screen mode badge and cycle until we reach the target, stopping if we loop
+# all the way back to where we started (meaning the target isn't available here).
+CLAUDE_MODELS = ["default", "sonnet", "opus", "opusplan", "haiku", "fable"]
+CLAUDE_MODES = ["default", "acceptEdits", "plan", "auto"]
+_MODEL_RE = re.compile(r"^(?:claude-[a-z0-9.\-]+|[a-z0-9]+)$")
+# `/config model=X` sets the running session only, but can't set every model
+# (Fable is a no-op there). Those go through `/model X`, which also saves X as the
+# account default for new sessions — a side effect we surface back to the caller.
+_MODEL_VIA_SLASH = {"fable"}
+# Matched against lowercased pane text. "manual" and "plan" share the ⏸ glyph, so
+# detection keys off the words, never the symbol.
+_MODE_BADGES = [
+    ("accept edits on", "acceptEdits"),
+    ("plan mode on", "plan"),
+    ("auto mode on", "auto"),
+    ("manual mode on", "default"),
+    ("bypass permissions on", "bypass"),
+]
+
+
+def _require_claude_tmux(sess: str) -> dict:
+    s = resolve(sess)
+    if s["kind"] != "tmux":
+        raise HTTPException(403, "read-only session (not tmux) — cannot send input")
+    if s.get("provider") != "claude":
+        raise HTTPException(400, "model/mode controls are only available for Claude Code sessions")
+    return s
+
+
+def _capture(sess: str, s: dict) -> str:
+    r = tmux("capture-pane", "-t", sess, "-p", socket=s["socket"])
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _detect_mode(pane_text: str):
+    low = pane_text.lower()
+    for needle, name in _MODE_BADGES:
+        if needle in low:
+            return name
+    return None
+
+
+@app.get("/api/sessions/{sess}/claude")
+def api_claude_state(sess: str):
+    s = _require_claude_tmux(sess)
+    return {"models": CLAUDE_MODELS, "modes": CLAUDE_MODES,
+            "mode": _detect_mode(_capture(sess, s))}
+
+
+@app.post("/api/sessions/{sess}/model")
+def api_set_model(sess: str, body: dict = Body(...)):
+    s = _require_claude_tmux(sess)
+    model = (body.get("model") or "").strip()
+    if not _MODEL_RE.match(model):
+        raise HTTPException(400, "invalid model name")
+    saves_default = model in _MODEL_VIA_SLASH
+    cmd = f"/model {model}" if saves_default else f"/config model={model}"
+    tmux("send-keys", "-t", sess, "-l", "--", cmd, socket=s["socket"])
+    tmux("send-keys", "-t", sess, "Enter", socket=s["socket"])
+    return {"ok": True, "model": model, "savesDefault": saves_default}
+
+
+@app.post("/api/sessions/{sess}/mode")
+def api_set_mode(sess: str, body: dict = Body(...)):
+    s = _require_claude_tmux(sess)
+    target = (body.get("mode") or "").strip()
+    if target not in CLAUDE_MODES:
+        raise HTTPException(400, f"mode must be one of {CLAUDE_MODES}")
+    start = _detect_mode(_capture(sess, s))
+    if start is None:
+        raise HTTPException(409, "couldn't read the current mode badge — bring the session to its prompt and retry")
+    if start != target:
+        moved = False
+        for _ in range(8):
+            tmux("send-keys", "-t", sess, "BTab", socket=s["socket"])
+            time.sleep(0.22)
+            cur = _detect_mode(_capture(sess, s))
+            if cur == target:
+                break
+            if cur is not None and cur != start:
+                moved = True
+            if moved and cur == start:  # cycled a full loop without hitting target
+                break
+    final = _detect_mode(_capture(sess, s))
+    return {"ok": True, "mode": final, "reached": final == target}
+
+
 @app.get("/api/sessions/{sess}/files")
 def api_files(sess: str):
     s = resolve(sess)
@@ -473,6 +565,7 @@ async def api_stream(sess: str):
                 if jp:
                     items, offset = cd.read_tail(
                         jp, max_bytes=8_000_000 if readonly else 262144)
+                    cd.attach_outputs(items, cwd=cwd)
                     yield _sse("init", {"sessionId": sid, "readonly": readonly,
                                         "items": items,
                                         "files": cd.changed_files(items, cwd=cwd)})
@@ -497,6 +590,7 @@ async def api_stream(sess: str):
                 _, info = resolve_sid(sess)
             new, offset = cd.read_since(jp, offset)
             if new:
+                cd.attach_outputs(new, cwd=cwd)
                 yield _sse("append", {"items": new,
                                       "files": cd.changed_files(new, cwd=cwd)})
             st = (info or {}).get("status")

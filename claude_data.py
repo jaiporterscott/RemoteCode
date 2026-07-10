@@ -228,6 +228,43 @@ def changed_files(items, cwd: str = None) -> list:
     return files
 
 
+# artifacts we can actually SHOW inline in the chat (3D models + images), as opposed
+# to merely link for download. Subset of ARTIFACT_EXTS.
+_INLINE_PREVIEW_EXTS = {"glb", "gltf", "obj", "stl", "ply", "usdz",
+                        "png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "tiff", "tif"}
+
+
+def attach_outputs(items, cwd: str = None):
+    """Attach an `outputs` list to each item: previewable artifacts (GLBs, images)
+    named in that message's Bash commands that exist on disk. Lets the chat surface a
+    clickable preview chip right where the command ran — a GLB from a Blender/script
+    step is viewable in the conversation flow, not only from the Files panel."""
+    for it in items:
+        outs, seen = [], set()
+        for c in it.get("chips", []):
+            if c.get("tool") != "Bash" or not c.get("detail"):
+                continue
+            for m in _PATH_RE.findall(c["detail"]):
+                ext = m.rsplit(".", 1)[-1].lower()
+                if ext not in _INLINE_PREVIEW_EXTS:
+                    continue
+                p = os.path.expanduser(m)
+                if not os.path.isabs(p) and cwd:
+                    p = os.path.normpath(os.path.join(cwd, p))
+                if p in seen or not os.path.isfile(p):
+                    continue
+                seen.add(p)
+                try:
+                    size = os.path.getsize(p)
+                except OSError:
+                    size = 0
+                outs.append({"path": p, "name": os.path.basename(p),
+                             "ext": ext, "size": size})
+        if outs:
+            it["outputs"] = outs
+    return items
+
+
 def history_versions(session_id: str, path: str) -> list:
     """Snapshot files for a given edited path, sorted by version."""
     d = os.path.join(FILE_HISTORY, session_id)
