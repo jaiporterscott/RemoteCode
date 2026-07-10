@@ -143,6 +143,21 @@ body{background:var(--bg);color:var(--fg);
 .cfg-in:focus,#settingsBody select:focus{outline:none;border-color:var(--accent2)}
 #settingsBody{max-width:100%;overflow-x:auto}
 
+/* rail inline rename */
+.rename-in{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--accent2);
+  border-radius:6px;padding:3px 6px;font:inherit;font-weight:600}
+.rename-in:focus{outline:none}
+
+/* right-click / long-press context menu */
+.ctx{position:fixed;z-index:60;min-width:180px;background:var(--bg2);border:1px solid var(--line);
+  border-radius:10px;padding:5px;box-shadow:0 10px 30px #000a;display:flex;flex-direction:column;gap:2px}
+.ctx-item{display:block;width:100%;text-align:left;background:none;border:0;color:var(--fg);
+  padding:9px 11px;border-radius:7px;cursor:pointer;font:inherit;white-space:nowrap}
+.ctx-item:hover{background:var(--bg3)}
+.ctx-item.danger{color:var(--err)}
+.ctx-item.muted{color:var(--dim);cursor:default}
+.ctx-item.muted:hover{background:none}
+
 .scrim{position:fixed;inset:0;background:#0007;z-index:30}
 
 .only-mobile{display:none}

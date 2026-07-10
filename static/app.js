@@ -8,6 +8,7 @@ const LANG = { js: "javascript", mjs: "javascript", jsx: "javascript", ts: "type
 function human(n) { if (n == null) return ""; const u = ["B", "KB", "MB", "GB"]; let i = 0; n = +n; while (n >= 1024 && i < 3) { n /= 1024; i++; } return (i ? n.toFixed(1) : n) + u[i]; }
 
 let cur = null, curReadonly = false, curChat = true;
+let editing = false;                 // pause rail refresh during inline rename
 let sessMap = new Map();
 let sse = null, mode = "chat";
 let term = null, fit = null, ws = null;
@@ -21,6 +22,7 @@ async function j(url, opts) {
 
 /* ---------- rail ---------- */
 async function refresh() {
+  if (editing) return;                 // don't yank the rail out from under an inline edit
   let list = [];
   try { list = await j("/api/sessions"); } catch (e) { return; }
   sessMap = new Map(list.map(s => [s.id, s]));
@@ -36,6 +38,11 @@ async function refresh() {
     m.append(el("div", "sess-sub", `${s.agent} · ${st}${tag}${s.changed ? " · " + s.changed + " files" : ""}`));
     li.append(m);
     li.onclick = () => { selectSession(s.id); closeRail(); };
+    li.oncontextmenu = e => { e.preventDefault(); showCtx(e.clientX, e.clientY, s); };
+    let lp = null;
+    li.addEventListener("touchstart", e => { const t = e.touches[0]; lp = setTimeout(() => { navigator.vibrate && navigator.vibrate(15); showCtx(t.clientX, t.clientY, s); }, 500); }, { passive: true });
+    const clr = () => clearTimeout(lp);
+    li.addEventListener("touchend", clr); li.addEventListener("touchmove", clr); li.addEventListener("touchcancel", clr);
     ul.append(li);
   }
   $("#railFoot").textContent = list.length ? `${list.length} session${list.length > 1 ? "s" : ""}` : "no sessions — tap ＋";
@@ -309,25 +316,75 @@ async function pickProject(agentKey) {
   body.append(ul);
 }
 
-/* ---------- rename / kill ---------- */
-$("#renameBtn").onclick = async () => {
-  if (!cur || curReadonly) return;
-  const s = sessMap.get(cur);
-  const name = prompt("Rename session:", s ? s.name : cur);
-  if (!name || name === cur) return;
-  try {
-    const r = await j(`/api/sessions/${encodeURIComponent(cur)}/rename`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
-    await refresh(); selectSession(r.name);
-  } catch (e) { alert("Rename failed: " + e.message); }
-};
-$("#killBtn").onclick = async () => {
-  if (!cur || curReadonly || !confirm(`Kill ${cur}? This ends the session.`)) return;
-  await j(`/api/sessions/${encodeURIComponent(cur)}`, { method: "DELETE" });
-  if (sse) sse.close(); teardownTerm();
-  cur = null; $("#curName").textContent = "—"; $("#curAgent").textContent = ""; setStatus("");
-  $("#chat").innerHTML = ""; $("#chat").append(el("div", "empty", "Session ended. Pick or create one."));
-  setFiles([]); refresh();
-};
+/* ---------- rename / kill / context menu ---------- */
+$("#renameBtn").onclick = () => { if (cur && !curReadonly) startRename(cur); };
+$("#killBtn").onclick = () => { if (cur && !curReadonly) doKill(cur, (sessMap.get(cur) || {}).name || cur); };
+
+async function doKill(id, name) {
+  if (!confirm(`Kill ${name}? This ends the session.`)) return;
+  try { await j(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }); }
+  catch (e) { alert("Kill failed: " + e.message); return; }
+  if (id === cur) {
+    if (sse) sse.close(); teardownTerm();
+    cur = null; $("#curName").textContent = "—"; $("#curAgent").textContent = ""; setStatus("");
+    $("#chat").innerHTML = ""; $("#chat").append(el("div", "empty", "Session ended. Pick or create one."));
+    setFiles([]);
+  }
+  refresh();
+}
+
+function ensureCtx() {
+  let m = $("#ctxMenu");
+  if (!m) {
+    m = el("div", "ctx hidden"); m.id = "ctxMenu"; document.body.append(m);
+    document.addEventListener("click", hideCtx);
+    document.addEventListener("scroll", hideCtx, true);
+    window.addEventListener("resize", hideCtx);
+    document.addEventListener("keydown", e => { if (e.key === "Escape") hideCtx(); });
+  }
+  return m;
+}
+function showCtx(x, y, s) {
+  const m = ensureCtx(); m.innerHTML = "";
+  const add = (label, fn, cls) => { const b = el("button", "ctx-item" + (cls ? " " + cls : ""), label); b.onmousedown = e => e.stopPropagation(); b.onclick = e => { e.stopPropagation(); hideCtx(); fn(); }; m.append(b); };
+  add("✎  Rename", () => startRename(s.id));
+  if (s.chat && s.kind !== "readonly") add("⌨  Open terminal", () => { selectSession(s.id); showTerm(); });
+  if (s.kind !== "readonly") add("✕  Kill", () => doKill(s.id, s.name), "danger");
+  if (s.kind === "readonly") add("read-only — view only", () => {}, "muted");
+  m.classList.remove("hidden");
+  const mw = 190, mh = m.offsetHeight || 130;
+  m.style.left = Math.max(6, Math.min(x, innerWidth - mw - 8)) + "px";
+  m.style.top = Math.max(6, Math.min(y, innerHeight - mh - 8)) + "px";
+}
+function hideCtx() { const m = $("#ctxMenu"); if (m) m.classList.add("hidden"); }
+
+function startRename(id) {
+  const s = sessMap.get(id);
+  const li = document.querySelector(`#sessionList li[data-id="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`);
+  if (!s || !li) return;
+  if (s.kind === "readonly") { alert("Read-only session — it isn't in a tmux RemoteCode can reach, so it can't be renamed."); return; }
+  editing = true;
+  const nameEl = li.querySelector(".sess-name");
+  const input = el("input", "rename-in"); input.value = s.name;
+  nameEl.replaceWith(input); input.focus(); input.select();
+  input.onclick = e => e.stopPropagation();
+  let done = false;
+  const finish = async commit => {
+    if (done) return; done = true; editing = false;
+    const v = input.value.trim();
+    if (commit && v && v !== s.name) {
+      try {
+        const r = await j(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: v }) });
+        if (cur === id) cur = r.name;
+        await refresh(); if (cur === r.name) selectSession(r.name);
+        return;
+      } catch (e) { alert("Rename failed: " + e.message); }
+    }
+    refresh();
+  };
+  input.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); finish(true); } else if (e.key === "Escape") { e.preventDefault(); finish(false); } };
+  input.onblur = () => finish(true);
+}
 
 /* ---------- terminal ---------- */
 $("#modeBtn").onclick = () => { mode === "chat" ? showTerm() : showChat(); };
