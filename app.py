@@ -64,23 +64,50 @@ app.add_middleware(BasicAuthMiddleware, user=config.AUTH_USER,
 
 # ---- tmux + /proc helpers ----------------------------------------------
 
+def _needs_sudo(socket) -> bool:
+    return bool(socket) and not os.access(socket, os.R_OK | os.W_OK) and config.sudo_enabled()
+
+
+def _tmux_argv(socket, *args) -> list:
+    pre = ["sudo", "-n"] if _needs_sudo(socket) else []
+    return pre + ["tmux"] + (["-S", socket] if socket else []) + list(args)
+
+
 def tmux(*args, socket=None):
-    base = ["tmux"] + (["-S", socket] if socket else [])
-    return subprocess.run(base + list(args), capture_output=True, text=True, timeout=10)
+    return subprocess.run(_tmux_argv(socket, *args), capture_output=True,
+                          text=True, timeout=10)
+
+
+def _tmux_env_socket(pid: int):
+    """The socket a running process is attached to, from its TMUX env var."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            for kv in f.read().split(b"\0"):
+                if kv.startswith(b"TMUX="):
+                    return kv[5:].split(b",")[0].decode() or None
+    except Exception:
+        return None
+    return None
 
 
 def tmux_sockets() -> list:
-    """Every tmux server socket this process can actually use (read+write).
-    Covers multiple servers: default, custom -L/-S sockets, other tmpdirs."""
+    """Every tmux server socket we can use. Found on the filesystem AND from the
+    TMUX env of running agent processes (which reveals sockets in dirs we can't
+    list, e.g. a root `sudo tmux`). Sockets we can't access directly are included
+    only when REMOTECODE_SUDO is enabled (we then drive them via `sudo -n tmux`)."""
     socks = set()
-    for pat in ("/tmp/tmux-*/*", os.path.join(os.path.expanduser("~"), ".tmux*/*")):
-        for s in glob.glob(pat):
-            try:
-                if stat.S_ISSOCK(os.stat(s).st_mode) and os.access(s, os.R_OK | os.W_OK):
-                    socks.add(s)
-            except OSError:
-                continue
-    return sorted(socks) or [None]      # None → tmux's own default socket
+    for s in glob.glob("/tmp/tmux-*/*"):
+        try:
+            if stat.S_ISSOCK(os.stat(s).st_mode):
+                socks.add(s)
+        except OSError:
+            continue
+    for info in cd.live_sessions().values():
+        s = _tmux_env_socket(info["pid"])
+        if s:
+            socks.add(s)
+    usable = [s for s in socks if os.access(s, os.R_OK | os.W_OK) or config.sudo_enabled()]
+    return sorted(usable) or [None]      # None → tmux's own default socket
 
 
 def tmux_panes() -> dict:
@@ -258,6 +285,33 @@ def _next_name(agentkey: str) -> str:
 def api_agents():
     return [{"key": a["key"], "label": a["label"], "installed": a["installed"],
              "chat": a["provider"] == "claude"} for a in config.load_agents()]
+
+
+@app.get("/api/settings")
+def api_settings():
+    return {
+        "agents": [{"key": a["key"], "label": a["label"], "cmd": a["cmd"],
+                    "provider": a.get("provider"), "detect": a.get("detect", True),
+                    "installed": a["installed"]} for a in config.load_agents()],
+        "projects": [{"key": k, "path": p, "exists": os.path.isdir(p)}
+                     for k, p in config.load_projects().items()],
+        "sudo": config.sudo_enabled(),
+        "authRequired": bool(config.get_password()),
+    }
+
+
+@app.post("/api/settings/agents")
+def api_save_agents(body: dict = Body(...)):
+    agents = body.get("agents")
+    if not isinstance(agents, list) or not agents:
+        raise HTTPException(400, "agents must be a non-empty list")
+    for a in agents:
+        if not (a.get("key") and a.get("label") and a.get("cmd")):
+            raise HTTPException(400, "each agent needs key, label and cmd")
+        if not re.match(r"^[a-z0-9_-]+$", a["key"]):
+            raise HTTPException(400, f"invalid key '{a['key']}' (use a-z 0-9 _ -)")
+    config.save_agents(agents)
+    return {"ok": True}
 
 
 @app.get("/api/projects")
@@ -471,7 +525,7 @@ async def ws_term(ws: WebSocket, name: str):
         await ws.close(code=4404)
         return
     sock = panes[name][0]
-    argv = ["tmux"] + (["-S", sock] if sock else []) + ["attach", "-t", name]
+    argv = _tmux_argv(sock, "attach", "-t", name)
     import ptyprocess
     pty = ptyprocess.PtyProcess.spawn(
         argv, env={**os.environ, "TERM": "xterm-256color"})

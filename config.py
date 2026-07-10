@@ -61,17 +61,32 @@ _DEFAULT_AGENTS = [
 ]
 
 
+AGENTS_FILE = os.path.join(CONFIG_DIR, "agents.json")
+PROJECTS_FILE = os.path.join(CONFIG_DIR, "projects.json")
+
+
 def load_agents() -> list:
-    fp = os.path.join(CONFIG_DIR, "agents.json")
     agents = _DEFAULT_AGENTS
-    if os.path.exists(fp):
+    if os.path.exists(AGENTS_FILE):
         try:
-            agents = json.load(open(fp))
+            agents = json.load(open(AGENTS_FILE))
         except Exception:
             pass
     for a in agents:
         a["installed"] = shutil.which(a["cmd"].split()[0]) is not None
     return agents
+
+
+def save_agents(agents: list):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    keep = ("key", "label", "cmd", "provider", "detect")
+    clean = [{k: a[k] for k in keep if k in a} for a in agents if a.get("key") and a.get("cmd")]
+    with open(AGENTS_FILE, "w") as f:
+        json.dump(clean, f, indent=2)
+
+
+def sudo_enabled() -> bool:
+    return os.environ.get("REMOTECODE_SUDO", "").lower() not in ("", "0", "false", "no")
 
 
 def agent_by_key(key: str):

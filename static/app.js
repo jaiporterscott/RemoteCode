@@ -160,45 +160,103 @@ function renderFiles() {
 }
 
 /* ---------- preview (any type) ---------- */
+let pv = null, pvPath = null, pvRendered = false;
+const isHtml = n => /\.(html?)$/i.test(n || "");
 function preview(path) {
+  pvPath = path; pvRendered = false;
   $("#previewName").textContent = path;
   $("#previewOpen").href = rawUrl(path);
-  const body = $("#previewBody"); body.innerHTML = "loading…";
   $("#previewBox").classList.remove("expanded");
+  $("#previewRender").classList.add("hidden");
+  $("#previewBody").innerHTML = "loading…";
   $("#preview").classList.remove("hidden");
-  j("/api/files/preview?path=" + encodeURIComponent(path)).then(d => {
-    body.innerHTML = "";
-    const head = $("#previewName");
-    head.textContent = (d.name || path) + (d.size != null ? "  ·  " + human(d.size) : "");
-    if (!d.exists) { body.append(el("div", "binary-card", "file no longer exists")); return; }
-    if (d.kind === "image") {
-      const img = el("img", "preview-img"); img.src = rawUrl(path); body.append(img);
-    } else if (d.kind === "model") {
-      const mv = document.createElement("model-viewer");
-      mv.className = "preview-model"; mv.setAttribute("src", rawUrl(path));
-      mv.setAttribute("camera-controls", ""); mv.setAttribute("auto-rotate", "");
-      mv.setAttribute("shadow-intensity", "1"); mv.setAttribute("exposure", "1");
-      body.append(mv);
-    } else if (d.kind === "text") {
-      if (d.truncated) body.append(el("div", "preview-note", `Large file — showing the first ${human((d.content || "").length)} of ${human(d.size)}.`));
-      const pre = el("pre"), code = el("code");
-      code.textContent = d.content || "";
-      const lang = LANG[(d.ext || "").replace(".", "")] || (/^\.?dockerfile$/i.test(d.name) ? "dockerfile" : null);
-      if (lang && window.hljs && hljs.getLanguage(lang)) code.className = "language-" + lang;
-      pre.append(code); body.append(pre);
-      try { window.hljs && hljs.highlightElement(code); } catch (e) {}
-    } else {
-      const card = el("div", "binary-card");
-      card.append(el("div", "big", "📦"));
-      card.append(el("div", null, `${d.kind === "binary" ? "Binary file" : (d.content || "Not previewable")} · ${human(d.size)}`));
-      const a = el("a", "btn primary", "Open / download"); a.href = rawUrl(path); a.target = "_blank";
-      const w = el("div"); w.style.marginTop = "12px"; w.append(a); card.append(w);
-      body.append(card);
-    }
-  }).catch(e => { body.innerHTML = ""; body.append(el("div", "binary-card", "error: " + e.message)); });
+  j("/api/files/preview?path=" + encodeURIComponent(path)).then(d => { pv = d; renderPreview(); })
+    .catch(e => { $("#previewBody").innerHTML = ""; $("#previewBody").append(el("div", "binary-card", "error: " + e.message)); });
 }
+function renderPreview() {
+  const d = pv, body = $("#previewBody"); body.innerHTML = "";
+  $("#previewName").textContent = (d.name || pvPath) + (d.size != null ? "  ·  " + human(d.size) : "");
+  const htmlish = d.kind === "text" && isHtml(d.name);
+  $("#previewRender").classList.toggle("hidden", !htmlish);          // raw/preview for HTML & source
+  $("#previewRender").textContent = pvRendered ? "Source" : "Rendered";
+  if (!d.exists) { body.append(el("div", "binary-card", "file no longer exists")); return; }
+  if (htmlish && pvRendered) {
+    const f = el("iframe", "preview-frame"); f.src = rawUrl(pvPath); f.setAttribute("sandbox", ""); body.append(f); return;
+  }
+  if (d.kind === "image") {
+    const img = el("img", "preview-img"); img.src = rawUrl(pvPath); body.append(img);
+  } else if (d.kind === "model") {
+    const mv = document.createElement("model-viewer");
+    mv.className = "preview-model"; mv.setAttribute("src", rawUrl(pvPath));
+    mv.setAttribute("camera-controls", ""); mv.setAttribute("auto-rotate", "");
+    mv.setAttribute("shadow-intensity", "1"); mv.setAttribute("exposure", "1");
+    body.append(mv);
+  } else if (d.kind === "text") {
+    if (d.truncated) body.append(el("div", "preview-note", `Large file — showing the first ${human((d.content || "").length)} of ${human(d.size)}.`));
+    const pre = el("pre"), code = el("code");
+    code.textContent = d.content || "";
+    const lang = LANG[(d.ext || "").replace(".", "")] || (/^\.?dockerfile$/i.test(d.name) ? "dockerfile" : null);
+    if (lang && window.hljs && hljs.getLanguage(lang)) code.className = "language-" + lang;
+    pre.append(code); body.append(pre);
+    try { window.hljs && hljs.highlightElement(code); } catch (e) {}
+  } else {
+    const card = el("div", "binary-card");
+    card.append(el("div", "big", "📦"));
+    card.append(el("div", null, `${d.kind === "binary" ? "Binary file" : (d.content || "Not previewable")} · ${human(d.size)}`));
+    const a = el("a", "btn primary", "Open / download"); a.href = rawUrl(pvPath); a.target = "_blank";
+    const w = el("div"); w.style.marginTop = "12px"; w.append(a); card.append(w);
+    body.append(card);
+  }
+}
+$("#previewRender").onclick = () => { pvRendered = !pvRendered; renderPreview(); };
 $("#previewExpand").onclick = () => $("#previewBox").classList.toggle("expanded");
 $("#previewClose").onclick = () => $("#preview").classList.add("hidden");
+
+/* ---------- settings (agents) ---------- */
+let cfgAgents = [];
+$("#settingsBtn").onclick = async () => {
+  const d = await j("/api/settings");
+  cfgAgents = d.agents.map(a => ({ ...a }));
+  renderSettings(d);
+  $("#settingsModal").classList.remove("hidden");
+};
+$("#settingsClose").onclick = () => $("#settingsModal").classList.add("hidden");
+$("#settingsAdd").onclick = () => { cfgAgents.push({ key: "", label: "", cmd: "", provider: null, detect: true, installed: false }); renderSettings(); };
+$("#settingsSave").onclick = async () => {
+  try {
+    await j("/api/settings/agents", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ agents: cfgAgents }) });
+    $("#settingsModal").classList.add("hidden");
+  } catch (e) { alert("Save failed: " + e.message); }
+};
+function renderSettings(meta) {
+  const body = $("#settingsBody"); body.innerHTML = "";
+  if (meta) body.append(el("div", "preview-note",
+    `Auth ${meta.authRequired ? "ON" : "OFF"} · sudo ${meta.sudo ? "ON" : "OFF"}. ` +
+    `Set REMOTECODE_PASSWORD to require login, REMOTECODE_SUDO=1 to control root-owned tmux. ` +
+    `"installed" = found on PATH. Provider "claude" enables the rich chat view.`));
+  const wrap = el("div", "cfg-wrap");
+  const hdr = el("div", "cfg-row cfg-head");
+  ["key", "label", "command", "provider", "detect", ""].forEach(h => hdr.append(el("div", null, h)));
+  wrap.append(hdr);
+  cfgAgents.forEach((a, i) => wrap.append(agentRow(a, i)));
+  body.append(wrap);
+}
+function agentRow(a, i) {
+  const row = el("div", "cfg-row");
+  row.append(cfgInput(a.key, v => a.key = v, "key"));
+  row.append(cfgInput(a.label, v => a.label = v, "Label"));
+  row.append(cfgInput(a.cmd, v => a.cmd = v, "command"));
+  const sel = document.createElement("select");
+  [["", "terminal"], ["claude", "claude (chat)"]].forEach(([val, txt]) => { const o = document.createElement("option"); o.value = val; o.textContent = txt; if ((a.provider || "") === val) o.selected = true; sel.append(o); });
+  sel.onchange = () => a.provider = sel.value || null; row.append(sel);
+  const chk = document.createElement("input"); chk.type = "checkbox"; chk.checked = a.detect !== false;
+  chk.onchange = () => a.detect = chk.checked;
+  const chkWrap = el("div"); chkWrap.style.textAlign = "center"; chkWrap.append(chk); row.append(chkWrap);
+  const del = el("button", "btn danger icon", "✕"); del.onclick = () => { cfgAgents.splice(i, 1); renderSettings(); };
+  row.append(del);
+  return row;
+}
+function cfgInput(val, on, ph) { const i = document.createElement("input"); i.className = "cfg-in"; i.value = val || ""; i.placeholder = ph || ""; i.oninput = () => on(i.value); return i; }
 
 /* ---------- prompt ---------- */
 $("#promptForm").addEventListener("submit", async e => {
