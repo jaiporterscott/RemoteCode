@@ -265,6 +265,43 @@ def attach_outputs(items, cwd: str = None):
     return items
 
 
+_MODEL_ALIASES = [("fable", "fable"), ("sonnet", "sonnet"),
+                  ("haiku", "haiku"), ("opus", "opus")]
+
+
+def latest_model_alias(path: str):
+    """Dropdown alias (opus/sonnet/haiku/fable) for the model on the most recent
+    assistant turn in the transcript, or None. Reflects what's actually running —
+    `default`/`opusplan` resolve to their concrete model here, which is the honest
+    answer to 'what model is selected'."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 500_000))
+            chunk = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    model = None
+    for line in chunk.split("\n"):
+        if '"model"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        m = d.get("message")
+        if isinstance(m, dict) and m.get("model"):
+            model = m["model"]           # keep scanning — the last one wins
+    if not model:
+        return None
+    low = model.lower()
+    for needle, alias in _MODEL_ALIASES:
+        if needle in low:
+            return alias
+    return None
+
+
 def history_versions(session_id: str, path: str) -> list:
     """Snapshot files for a given edited path, sorted by version."""
     d = os.path.join(FILE_HISTORY, session_id)

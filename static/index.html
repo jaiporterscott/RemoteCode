@@ -61,7 +61,18 @@
         </div>
         <span id="cbMsg" class="cb-msg"></span>
       </div>
+      <div id="selCard" class="selcard hidden"></div>
+      <div id="chatKeys" class="keybar chatkeys hidden">
+        <button type="button" data-k="up">↑</button>
+        <button type="button" data-k="down">↓</button>
+        <button type="button" data-k="enter">⏎ Enter</button>
+        <button type="button" data-k="esc">Esc</button>
+        <button type="button" data-k="ctrlc">^C</button>
+      </div>
+      <div id="attachBar" class="attachbar hidden"></div>
       <form id="promptForm">
+        <button type="button" id="attachBtn" class="btn icon" title="Attach files">📎</button>
+        <input type="file" id="fileInput" multiple hidden>
         <textarea id="promptInput" rows="1" placeholder="Type a prompt…  (Enter to send, Shift+Enter for newline)"></textarea>
         <button id="sendBtn" class="btn primary" type="submit">Send</button>
       </form>
@@ -69,31 +80,40 @@
 
     <section id="termWrap" class="pane hidden">
       <div id="term"></div>
+      <div id="termKeys" class="keybar">
+        <button type="button" data-k="esc">Esc</button>
+        <button type="button" data-k="tab">⇥</button>
+        <button type="button" data-k="up">↑</button>
+        <button type="button" data-k="down">↓</button>
+        <button type="button" data-k="left">←</button>
+        <button type="button" data-k="right">→</button>
+        <button type="button" data-k="enter">⏎</button>
+        <button type="button" data-k="ctrlc">^C</button>
+      </div>
     </section>
   </main>
 
-  <aside id="filesPanel" class="drawer hidden">
-    <div class="drawer-head">
-      <b>Files changed / generated</b>
-      <button id="filesClose" class="btn icon">✕</button>
+  <aside id="filesPanel" class="sidepanel hidden">
+    <div class="sp-head">
+      <b>Files changed / generated <span id="filesCountBadge" class="sp-count">0</span></b>
+      <span class="sp-actions">
+        <button id="spExpand" class="btn icon" title="Widen panel">⤢</button>
+        <button id="filesClose" class="btn icon" title="Close panel">✕</button>
+      </span>
     </div>
     <ul id="filesList"></ul>
-  </aside>
-
-  <div id="preview" class="modal hidden">
-    <div class="modal-box" id="previewBox">
-      <div class="modal-head">
+    <div id="spPreview" class="sp-preview hidden">
+      <div class="sp-pv-head">
+        <button id="pvBack" class="btn icon" title="Back to files">←</button>
         <b id="previewName">file</b>
         <span class="head-actions">
           <button id="previewRender" class="btn hidden" title="Toggle rendered / source">Rendered</button>
-          <button id="previewExpand" class="btn icon" title="Expand">⛶</button>
           <a id="previewOpen" class="btn icon" title="Open raw" target="_blank">↗</a>
-          <button id="previewClose" class="btn icon">✕</button>
         </span>
       </div>
       <div id="previewBody"></div>
     </div>
-  </div>
+  </aside>
 
   <div id="settingsModal" class="modal hidden">
     <div class="modal-box">

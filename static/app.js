@@ -59,6 +59,8 @@ function setStatus(st, waitingFor) {
 function selectSession(id) {
   if (sse) { sse.close(); sse = null; }
   teardownTerm();
+  hideSelCard();
+  clearAttachments();
   cur = id;
   const s = sessMap.get(id);
   curReadonly = s ? s.kind === "readonly" : false;
@@ -76,9 +78,12 @@ function applyCaps() {
   $("#filesBtn").classList.toggle("hidden", !curChat);
   $("#modeBtn").classList.toggle("hidden", !curChat || curReadonly);
   $("#claudeBar").classList.toggle("hidden", !curChat || curReadonly);
+  $("#chatKeys").classList.toggle("hidden", !curChat || curReadonly);
   const noInput = curReadonly || !curChat;
   $("#promptInput").disabled = noInput;
   $("#sendBtn").disabled = noInput;
+  $("#attachBtn").disabled = noInput;
+  $("#attachBtn").classList.toggle("hidden", !curChat);
   $("#promptInput").placeholder = curReadonly
     ? "Read-only — this session isn't in tmux, so it can't be driven from here."
     : "Type a prompt…  (Enter to send, Shift+Enter for newline)";
@@ -96,8 +101,11 @@ function cbFlash(t, err) {
 async function refreshClaudeBar() {
   if (!cur || !curChat || curReadonly) return;
   setActiveMode(null); cbFlash("");
-  try { const d = await j(`/api/sessions/${encodeURIComponent(cur)}/claude`); setActiveMode(d.mode); }
-  catch (e) { /* non-claude or unreachable — bar simply shows no active mode */ }
+  try {
+    const d = await j(`/api/sessions/${encodeURIComponent(cur)}/claude`);
+    setActiveMode(d.mode);
+    if (d.model) $("#modelSel").value = d.model;   // reflect the model actually running
+  } catch (e) { /* non-claude or unreachable — bar simply shows no active mode */ }
 }
 $("#modelSel").addEventListener("change", async e => {
   if (!cur) return;
@@ -123,6 +131,60 @@ document.querySelectorAll("#modeSeg .seg-btn").forEach(b => {
   });
 });
 
+/* ---------- interactive selection: on-screen keys + choice card ---------- */
+const TERM_SEQ = { esc:"\x1b", up:"\x1b[A", down:"\x1b[B", left:"\x1b[D", right:"\x1b[C",
+                   tab:"\t", btab:"\x1b[Z", enter:"\r", ctrlc:"\x03" };
+function sendTermSeq(seq) { if (ws && ws.readyState === 1) ws.send(seq); if (term) term.focus(); }
+document.querySelectorAll("#termKeys [data-k]").forEach(b => {
+  b.addEventListener("click", () => { const s = TERM_SEQ[b.dataset.k]; if (s != null) sendTermSeq(s); });
+});
+document.querySelectorAll("#chatKeys [data-k]").forEach(b => {
+  b.addEventListener("click", async () => {
+    if (!cur || curReadonly) return;
+    try {
+      await j(`/api/sessions/${encodeURIComponent(cur)}/key`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: b.dataset.k }) });
+    } catch (e) { /* transient — the poll re-syncs */ }
+    setTimeout(refreshPromptState, 250);
+  });
+});
+
+let selSig = "";
+function hideSelCard() { selSig = ""; const c = $("#selCard"); c.classList.add("hidden"); c.innerHTML = ""; }
+async function refreshPromptState() {
+  if (!cur || !curChat || curReadonly || mode !== "chat") { hideSelCard(); return; }
+  let d;
+  try { d = await j(`/api/sessions/${encodeURIComponent(cur)}/prompt-state`); }
+  catch (e) { hideSelCard(); return; }
+  if (!d || !d.waiting || !d.options || !d.options.length) { hideSelCard(); return; }
+  const sig = (d.title || "") + "‖" + d.options.map(o => o.n + ":" + o.label + (o.selected ? "*" : "")).join(",");
+  if (sig === selSig) return;                       // unchanged — don't rebuild (keeps taps responsive)
+  selSig = sig;
+  const c = $("#selCard"); c.innerHTML = "";
+  c.append(el("div", "sel-hint", "Waiting for your choice"));
+  if (d.title) c.append(el("div", "sel-title", d.title));
+  const wrap = el("div", "sel-opts");
+  d.options.forEach(o => {
+    const btn = el("button", "sel-opt" + (o.selected ? " cur" : ""));
+    btn.type = "button";
+    btn.append(el("span", "sel-n", o.n));
+    btn.append(el("span", "sel-l", o.label));
+    btn.onclick = async () => {
+      wrap.querySelectorAll("button").forEach(x => x.disabled = true);
+      try {
+        await j(`/api/sessions/${encodeURIComponent(cur)}/select`,
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ option: o.n }) });
+      } catch (e) { wrap.querySelectorAll("button").forEach(x => x.disabled = false); }
+      selSig = "";                                  // force rebuild on next poll
+      setTimeout(refreshPromptState, 450);
+    };
+    wrap.append(btn);
+  });
+  c.append(wrap);
+  c.classList.remove("hidden");
+}
+setInterval(refreshPromptState, 2500);
+
 /* ---------- stream / chat ---------- */
 function startStream() {
   seen = new Set();
@@ -131,7 +193,7 @@ function startStream() {
   sse.addEventListener("init", e => {
     const d = JSON.parse(e.data);
     if (typeof d.readonly === "boolean") { curReadonly = d.readonly; applyCaps(); }
-    chat.innerHTML = "";
+    chat.innerHTML = ""; seen = new Set();   // full resync (also fires on SSE reconnect) — clear dedup so nothing is skipped as "seen"
     if (!d.items.length) chat.append(el("div", "empty", d.readonly ? "No messages in the recent transcript." : "No messages yet. Say hello 👋"));
     d.items.forEach(addItem); setFiles(d.files); scrollChat(true);
   });
@@ -213,10 +275,13 @@ async function loadFiles() { try { setFiles(await j(`/api/sessions/${encodeURICo
 function renderFiles() {
   const arr = [...filesMap.values()].sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
   $("#filesCount").textContent = arr.length;
+  const badge = $("#filesCountBadge"); if (badge) badge.textContent = arr.length;
   const ul = $("#filesList"); ul.innerHTML = "";
   if (!arr.length) { ul.append(el("li", null, "nothing yet")); return; }
   for (const f of arr) {
     const li = el("li");
+    li.dataset.path = f.path;
+    if (f.path === activePreviewPath) li.classList.add("active");
     if (f.exists && IMG_RE.test(f.name)) { const img = el("img", "thumb"); img.src = rawUrl(f.path); img.loading = "lazy"; li.append(img); }
     else { li.append(el("div", "ficon", MODEL_RE.test(f.name) ? "🧊" : "📄")); }
     const meta = el("div", "sess-meta");
@@ -229,16 +294,22 @@ function renderFiles() {
 }
 
 /* ---------- preview (any type) ---------- */
-let pv = null, pvPath = null, pvRendered = false;
+let pv = null, pvPath = null, pvRendered = false, activePreviewPath = null;
 const isHtml = n => /\.(html?)$/i.test(n || "");
+function applyActiveFile() {
+  document.querySelectorAll("#filesList li").forEach(li =>
+    li.classList.toggle("active", li.dataset.path === activePreviewPath));
+}
 function preview(path) {
-  pvPath = path; pvRendered = false;
+  pvPath = path; pvRendered = false; activePreviewPath = path;
   $("#previewName").textContent = path;
   $("#previewOpen").href = rawUrl(path);
-  $("#previewBox").classList.remove("expanded");
   $("#previewRender").classList.add("hidden");
   $("#previewBody").innerHTML = "loading…";
-  $("#preview").classList.remove("hidden");
+  $("#filesPanel").classList.remove("hidden");   // open the side panel if closed
+  $("#filesPanel").classList.add("previewing");
+  $("#spPreview").classList.remove("hidden");
+  applyActiveFile();
   j("/api/files/preview?path=" + encodeURIComponent(path)).then(d => { pv = d; renderPreview(); })
     .catch(e => { $("#previewBody").innerHTML = ""; $("#previewBody").append(el("div", "binary-card", "error: " + e.message)); });
 }
@@ -278,8 +349,12 @@ function renderPreview() {
   }
 }
 $("#previewRender").onclick = () => { pvRendered = !pvRendered; renderPreview(); };
-$("#previewExpand").onclick = () => $("#previewBox").classList.toggle("expanded");
-$("#previewClose").onclick = () => $("#preview").classList.add("hidden");
+$("#spExpand").onclick = () => $("#filesPanel").classList.toggle("wide");
+$("#pvBack").onclick = () => {
+  $("#filesPanel").classList.remove("previewing");
+  $("#spPreview").classList.add("hidden");
+  activePreviewPath = null; applyActiveFile();
+};
 
 /* ---------- settings (agents) ---------- */
 let cfgAgents = [];
@@ -330,15 +405,71 @@ function cfgInput(val, on, ph) { const i = document.createElement("input"); i.cl
 /* ---------- prompt ---------- */
 $("#promptForm").addEventListener("submit", async e => {
   e.preventDefault();
-  if (curReadonly || !curChat) return;
-  const ta = $("#promptInput"); const text = ta.value;
-  if (!text.trim() || !cur) return;
+  if (curReadonly || !curChat || !cur) return;
+  const ta = $("#promptInput"); const text = ta.value.trim();
+  const ready = pendingAttachments.filter(a => a.path);       // only fully-uploaded files
+  if (!text && !ready.length) return;
+  if (pendingAttachments.some(a => a.uploading)) return;      // wait for uploads to finish
   ta.value = ""; ta.style.height = "auto";
+  // paths go on one line (send-keys can't do multi-line), the agent reads them by path
+  const list = ready.map(a => a.path).join(" ");
+  const sent = list ? (text ? `${text} — files: ${list}` : `Please look at these uploaded files: ${list}`) : text;
+  clearAttachments();
   const emptyEl = $("#chat").querySelector(".empty"); if (emptyEl) emptyEl.remove();
-  addItem({ role: "user", text, chips: [], uuid: "opt-" + Date.now() }); scrollChat(true);
-  try { await j(`/api/sessions/${encodeURIComponent(cur)}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }); }
+  addItem({ role: "user", text: sent, chips: [], uuid: "opt-" + Date.now() }); scrollChat(true);
+  try { await j(`/api/sessions/${encodeURIComponent(cur)}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: sent }) }); }
   catch (err) { addItem({ role: "assistant", text: "⚠ send failed: " + err.message, chips: [] }); }
 });
+
+/* ---------- file upload (attach button · drag-drop · paste image) ---------- */
+let pendingAttachments = [];   // {id, name, size, path|null, uploading, error}
+let attachSeq = 0;
+function renderAttachBar() {
+  const bar = $("#attachBar");
+  bar.classList.toggle("hidden", pendingAttachments.length === 0);
+  bar.innerHTML = "";
+  for (const a of pendingAttachments) {
+    const chip = el("div", "attach-chip" + (a.uploading ? " uploading" : "") + (a.error ? " err" : ""));
+    chip.append(el("span", "an", a.name));
+    chip.append(el("span", "asz", a.error ? "failed" : (a.uploading ? "uploading…" : human(a.size))));
+    const x = el("button", "ax", "✕"); x.type = "button";
+    x.onclick = () => { pendingAttachments = pendingAttachments.filter(p => p.id !== a.id); renderAttachBar(); };
+    chip.append(x);
+    bar.append(chip);
+  }
+}
+function clearAttachments() { pendingAttachments = []; renderAttachBar(); }
+async function uploadFile(file) {
+  if (!cur || curReadonly || !curChat) return;
+  const a = { id: ++attachSeq, name: file.name || "pasted", size: file.size, path: null, uploading: true, error: false };
+  pendingAttachments.push(a); renderAttachBar();
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(cur)}/upload?name=${encodeURIComponent(a.name)}`,
+      { method: "POST", body: file });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+    const d = await r.json();
+    a.path = d.path; a.name = d.name; a.size = d.size; a.uploading = false;
+  } catch (e) { a.uploading = false; a.error = true; }
+  renderAttachBar();
+}
+function uploadFiles(files) { for (const f of files) if (f) uploadFile(f); }
+$("#attachBtn").addEventListener("click", () => { if (cur && curChat && !curReadonly) $("#fileInput").click(); });
+$("#fileInput").addEventListener("change", e => { uploadFiles(e.target.files); e.target.value = ""; });
+$("#promptInput").addEventListener("paste", e => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); uploadFiles(files); }
+});
+(() => {
+  const form = $("#promptForm"), chatWrap = $("#chatWrap");
+  const over = e => { e.preventDefault(); form.classList.add("dragover"); };
+  const leave = () => form.classList.remove("dragover");
+  ["dragenter", "dragover"].forEach(ev => chatWrap.addEventListener(ev, over));
+  ["dragleave", "dragend"].forEach(ev => chatWrap.addEventListener(ev, leave));
+  chatWrap.addEventListener("drop", e => {
+    e.preventDefault(); leave();
+    if (e.dataTransfer?.files?.length) uploadFiles(e.dataTransfer.files);
+  });
+})();
 $("#promptInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#promptForm").requestSubmit(); } });
 $("#promptInput").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = Math.min(180, e.target.scrollHeight) + "px"; });
 
@@ -450,7 +581,7 @@ function startRename(id) {
 
 /* ---------- terminal ---------- */
 $("#modeBtn").onclick = () => { mode === "chat" ? showTerm() : showChat(); };
-function showChat() { mode = "chat"; $("#chatWrap").classList.remove("hidden"); $("#termWrap").classList.add("hidden"); $("#modeBtn").textContent = "⌨ Terminal"; teardownTerm(); }
+function showChat() { mode = "chat"; $("#chatWrap").classList.remove("hidden"); $("#termWrap").classList.add("hidden"); $("#modeBtn").textContent = "⌨ Terminal"; teardownTerm(); refreshPromptState(); }
 function showTerm() {
   if (!cur) return;
   mode = "term"; $("#chatWrap").classList.add("hidden"); $("#termWrap").classList.remove("hidden"); $("#modeBtn").textContent = "💬 Chat";
@@ -477,7 +608,11 @@ function teardownTerm() {
 
 /* ---------- modals / mobile ---------- */
 $("#filesBtn").onclick = () => $("#filesPanel").classList.toggle("hidden");
-$("#filesClose").onclick = () => $("#filesPanel").classList.add("hidden");
+$("#filesClose").onclick = () => {
+  $("#filesPanel").classList.add("hidden");
+  $("#filesPanel").classList.remove("previewing"); $("#spPreview").classList.add("hidden");
+  activePreviewPath = null; applyActiveFile();
+};
 $("#newClose").onclick = () => $("#newModal").classList.add("hidden");
 $("#menuBtn").onclick = () => { $("#rail").classList.add("open"); $("#rail-scrim").classList.remove("hidden"); };
 $("#rail-scrim").onclick = closeRail;

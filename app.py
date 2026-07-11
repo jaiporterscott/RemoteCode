@@ -9,7 +9,7 @@ files-changed view is rendered from Claude's own transcript.
 Binds 127.0.0.1:7070 by default with HTTP basic-auth built in.
 """
 import os, re, time, json, glob, stat, base64, asyncio, secrets, subprocess, threading
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -450,8 +450,13 @@ def _detect_mode(pane_text: str):
 @app.get("/api/sessions/{sess}/claude")
 def api_claude_state(sess: str):
     s = _require_claude_tmux(sess)
+    model = None
+    if s.get("sid"):
+        jp = cd.transcript_path(s["sid"])
+        if jp:
+            model = cd.latest_model_alias(jp)
     return {"models": CLAUDE_MODELS, "modes": CLAUDE_MODES,
-            "mode": _detect_mode(_capture(sess, s))}
+            "mode": _detect_mode(_capture(sess, s)), "model": model}
 
 
 @app.post("/api/sessions/{sess}/model")
@@ -490,6 +495,150 @@ def api_set_mode(sess: str, body: dict = Body(...)):
                 break
     final = _detect_mode(_capture(sess, s))
     return {"ok": True, "mode": final, "reached": final == target}
+
+
+# ---- interactive selection: on-screen keys + menu detection / navigation ------
+# Claude Code prompts (trust / permissions / plan approval / model picker) all render
+# as numbered lists with a `❯` marking the current row. We parse that from the pane and
+# drive it with arrow keys — the one primitive that works for every menu shape, whether
+# or not the options are numbered on screen.
+_OPT_RE = re.compile(r"^\s*(❯)?\s*(\d+)\.\s+(\S.*?)\s*$")
+_KEY_ALIASES = {
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+    "enter": "Enter", "escape": "Escape", "esc": "Escape", "tab": "Tab",
+    "btab": "BTab", "space": "Space", "pageup": "PageUp", "pagedown": "PageDown",
+    "ctrlc": "C-c",
+}
+
+
+def _parse_menu(pane_text: str):
+    """Detect a Claude Code numbered selection menu in the pane. Returns
+    {"title", "options": [{"n", "label", "selected"}]} or None."""
+    lines = pane_text.split("\n")
+    found = []
+    for i, ln in enumerate(lines):
+        m = _OPT_RE.match(ln)
+        if m:
+            label = re.sub(r"\s{2,}.*$", "", m.group(3)).strip()  # drop trailing description column
+            found.append((i, bool(m.group(1)), int(m.group(2)), label[:60]))
+    # keep the longest contiguous run numbered 1,2,3,… with one row marked ❯ — this
+    # rejects stray "1." lines in ordinary output that aren't an actual menu.
+    best, run = None, []
+    for it in found:
+        if not run:
+            run = [it] if it[2] == 1 else []
+        elif it[2] == run[-1][2] + 1 and 0 < it[0] - run[-1][0] <= 6:
+            run.append(it)
+        else:
+            if len(run) >= 2 and any(x[1] for x in run):
+                best = run
+            run = [it] if it[2] == 1 else []
+    if len(run) >= 2 and any(x[1] for x in run):
+        best = run
+    if not best:
+        return None
+    first = best[0][0]
+    title = ""
+    for j in range(first - 1, max(-1, first - 6), -1):
+        t = lines[j].strip(" │╭╮╰╯─").strip()
+        if t and not _OPT_RE.match(lines[j]):
+            title = t[:80]
+            break
+    return {"title": title,
+            "options": [{"n": n, "label": lbl, "selected": sel} for (_i, sel, n, lbl) in best]}
+
+
+def _require_tmux(sess: str) -> dict:
+    s = resolve(sess)
+    if s["kind"] != "tmux":
+        raise HTTPException(403, "read-only session (not tmux) — cannot send input")
+    return s
+
+
+@app.get("/api/sessions/{sess}/prompt-state")
+def api_prompt_state(sess: str):
+    s = resolve(sess)
+    if s["kind"] != "tmux":
+        return {"waiting": False}
+    menu = _parse_menu(_capture(sess, s))
+    return {"waiting": True, **menu} if menu else {"waiting": False}
+
+
+@app.post("/api/sessions/{sess}/key")
+def api_key(sess: str, body: dict = Body(...)):
+    s = _require_tmux(sess)
+    raw = (body.get("key") or "").strip().lower()
+    if len(raw) == 1 and raw.isdigit():
+        tmux("send-keys", "-t", sess, "-l", "--", raw, socket=s["socket"])
+        return {"ok": True}
+    key = _KEY_ALIASES.get(raw)
+    if not key:
+        raise HTTPException(400, "unknown key")
+    tmux("send-keys", "-t", sess, key, socket=s["socket"])
+    return {"ok": True}
+
+
+@app.post("/api/sessions/{sess}/select")
+def api_select(sess: str, body: dict = Body(...)):
+    s = _require_tmux(sess)
+    try:
+        target = int(body.get("option"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "option must be a number")
+    for _ in range(16):
+        menu = _parse_menu(_capture(sess, s))
+        if not menu:
+            raise HTTPException(409, "no selection menu is active")
+        nums = [o["n"] for o in menu["options"]]
+        if target not in nums:
+            raise HTTPException(400, f"no option {target} in the current menu")
+        cur = next((o["n"] for o in menu["options"] if o["selected"]), nums[0])
+        if cur == target:
+            break
+        ci, ti = nums.index(cur), nums.index(target)
+        tmux("send-keys", "-t", sess, "Down" if ti > ci else "Up", socket=s["socket"])
+        time.sleep(0.14)
+    tmux("send-keys", "-t", sess, "Enter", socket=s["socket"])
+    return {"ok": True, "selected": target}
+
+
+# ---- file upload from chat: save into the session's cwd so the agent can read it ----
+MAX_UPLOAD_BYTES = 128 * 1024 * 1024
+_UP_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _uploads_dir(s: dict) -> str:
+    cwd = (s.get("info") or {}).get("cwd")
+    if cwd and os.path.isdir(cwd) and os.access(cwd, os.W_OK):
+        return os.path.join(cwd, ".remotecode-uploads")
+    return os.path.expanduser("~/.remotecode/uploads")
+
+
+def _unique_path(dirpath: str, name: str) -> str:
+    base, ext = os.path.splitext(name)
+    cand = os.path.join(dirpath, name)
+    i = 1
+    while os.path.exists(cand):
+        cand = os.path.join(dirpath, f"{base}_{i}{ext}")
+        i += 1
+    return cand
+
+
+@app.post("/api/sessions/{sess}/upload")
+async def api_upload(sess: str, request: Request, name: str = ""):
+    s = _require_tmux(sess)
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"file too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
+    safe = _UP_SAFE.sub("_", os.path.basename(name or "").strip()) or "upload.bin"
+    dest_dir = _uploads_dir(s)
+    os.makedirs(dest_dir, exist_ok=True)
+    path = _unique_path(dest_dir, safe)
+    with open(path, "wb") as f:
+        f.write(data)
+    return {"ok": True, "path": path, "name": os.path.basename(path), "size": len(data)}
 
 
 @app.get("/api/sessions/{sess}/files")
@@ -564,7 +713,7 @@ async def api_stream(sess: str):
                 jp = cd.transcript_path(sid)
                 if jp:
                     items, offset = cd.read_tail(
-                        jp, max_bytes=8_000_000 if readonly else 262144)
+                        jp, max_bytes=8_000_000 if readonly else 4_000_000)
                     cd.attach_outputs(items, cwd=cwd)
                     yield _sse("init", {"sessionId": sid, "readonly": readonly,
                                         "items": items,
