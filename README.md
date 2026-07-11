@@ -4,7 +4,9 @@ A self‑hosted web control panel for **AI coding agents running in tmux** — l
 mobile‑app cockpit for Claude Code, Aider, Codex, OpenCode, Goose, Gemini, or a
 plain shell. Create sessions, type prompts, watch the conversation, see every file
 being changed or generated (including **live GLB / image previews**), and drop into
-a full terminal for any of them — all from your phone or browser.
+a full terminal for any of them — all from your phone or browser. Switch the Claude
+model or permission mode, answer interactive menus, and upload files without ever
+leaving the chat.
 
 ![built for tmux](https://img.shields.io/badge/runs%20in-tmux-1f6feb) ![license MIT](https://img.shields.io/badge/license-MIT-3fb950)
 
@@ -16,14 +18,47 @@ a full terminal for any of them — all from your phone or browser.
   transcript — your prompts, replies, and inline "✎ Edited / ＋ Wrote" chips — with a
   prompt box that types straight into the session. The **full command** of every
   `Bash` step is shown, untruncated.
+- **Model & permission mode from the chat** — pick the model from a dropdown and tap
+  the permission mode; the bar reflects the model that's actually running. See
+  [Model & mode](#model--mode--from-the-chat) below.
+- **Answer interactive prompts** — when a session is waiting on a choice (trust folder,
+  permission, plan approval, model picker), the options appear as **tap targets** in the
+  chat. Plus on‑screen ↑ ↓ Enter Esc keys, and a full mobile **terminal key bar**
+  (Esc ⇥ ↑ ↓ ← → ⏎ ^C) so you can drive any TUI from a phone.
+- **Upload files into the chat** — attach button, drag‑and‑drop, or paste an image.
+  Files are saved into the session's working directory and referenced by path in your
+  prompt, so the agent can read them.
 - **Files changed / generated**, live — including artifacts produced by commands
   (e.g. a `.glb` a script just exported), each with its size.
-- **Preview any file type**: syntax‑highlighted code (colour scheme by language),
-  **auto‑previewed images**, **interactive GLB/glTF 3D** models, or a size‑aware
-  download card for anything else. Every preview can be **expanded** to full screen.
+- **Preview any file type** in a **docked side panel** next to the file list:
+  syntax‑highlighted code (colour scheme by language), **auto‑previewed images**,
+  **interactive GLB/glTF 3D** models, or a size‑aware download card for anything else.
+  Widen the panel for a bigger view.
 - **Live terminal** for *any* tmux session over a websocket (xterm.js) — handle
   interactive prompts, or use agents that have no chat provider.
 - **Optional auth**, off by default (see Security). Binds to `127.0.0.1`.
+
+## Model & mode — from the chat
+
+A control bar sits above the prompt on any Claude Code session:
+
+![Model dropdown and permission‑mode buttons above the chat prompt](docs/model-mode-bar.png)
+
+- **Model** — pick from the dropdown. Most models switch **just the current session**
+  (via `/config model=<name>`). **Fable** is the exception: it's set with `/model fable`,
+  which also becomes your account default, so the bar flags it as *saved as default*.
+  The dropdown reflects the model that's actually running (read from the transcript).
+- **Permission mode** — tap **Manual**, **Accept edits**, **Plan**, or **Auto**. The
+  Claude Code TUI has no "set mode" command; the only control is **Shift+Tab**, which
+  advances one step around a cycle whose length varies per account. RemoteCode reads the
+  on‑screen mode badge and taps Shift+Tab until it lands on your target — so a single tap
+  is deterministic no matter where the cycle started:
+
+![The four permission modes cycle on Shift+Tab](docs/mode-cycle.png)
+
+The same badge‑reading trick powers the **interactive prompt** support: menus like the
+trust check, permission requests, plan approval, and the model picker are detected from
+the terminal and surfaced as tap targets, then driven with arrow keys + Enter.
 
 ## Quick start
 
