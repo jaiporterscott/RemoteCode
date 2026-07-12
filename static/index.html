@@ -80,7 +80,8 @@
       <form id="promptForm">
         <button type="button" id="attachBtn" class="btn icon" title="Attach files">📎</button>
         <input type="file" id="fileInput" multiple hidden>
-        <textarea id="promptInput" rows="1" placeholder="Type a prompt…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <textarea id="promptInput" rows="1" placeholder="Type a prompt…  (Enter to send, Shift+Enter for newline)"
+                  spellcheck="true" lang="en" autocorrect="off" autocapitalize="sentences"></textarea>
         <button id="sendBtn" class="btn primary" type="submit">Send</button>
       </form>
     </section>

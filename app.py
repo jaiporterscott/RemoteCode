@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 import claude_data as cd
 import recover
+import minio_sync
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -650,7 +651,37 @@ def api_files(sess: str):
         return []
     cwd = (s.get("info") or {}).get("cwd")
     items, _ = cd.read_tail(cd.transcript_path(s["sid"]), max_bytes=8_000_000)
-    return cd.changed_files(items, cwd=cwd)
+    files = cd.changed_files(items, cwd=cwd)
+    if minio_sync.enabled():                       # mark which are backed up to MinIO
+        for f in files:
+            f["synced"] = minio_sync.is_synced(s["sid"], f["path"])
+    return files
+
+
+@app.get("/api/minio")
+def api_minio_status():
+    return minio_sync.status()
+
+
+@app.post("/api/minio/sync")
+def api_minio_sync(body: dict = Body(default={})):
+    """Force an immediate MinIO sync. {"sess": name} for one session, else all."""
+    if not minio_sync.enabled():
+        return {"enabled": False, "uploaded": []}
+    sess = (body or {}).get("sess")
+    targets = [resolve(sess)] if sess else all_sessions()
+    uploaded = []
+    for s in targets:
+        sid = s.get("sid")
+        if not sid:
+            continue
+        cwd = (s.get("info") or {}).get("cwd")
+        path = cd.transcript_path(sid)
+        if not path:
+            continue
+        items, _ = cd.read_tail(path, max_bytes=8_000_000)
+        uploaded += minio_sync.sync_files(sid, cd.changed_files(items, cwd=cwd), cwd=cwd)
+    return {"enabled": True, "uploaded": uploaded, "count": len(uploaded)}
 
 
 TEXT_MAX = 500_000          # above this we return a snippet + flag, never the whole file
@@ -936,6 +967,62 @@ async def _startup_recover():
             print(f"[recover] failed: {e}", flush=True)
 
     asyncio.create_task(_go())
+
+
+def _minio_sweep_once(seen_mtimes: dict):
+    """Sync files for every session whose transcript changed since the last sweep.
+    Runs in a worker thread (called via asyncio.to_thread) — no async here."""
+    sid2cwd = {sid: info.get("cwd") for sid, info in cd.live_sessions().items()}
+    total = 0
+    for jf in glob.glob(os.path.join(cd.PROJECTS_DIR, "*", "*.jsonl")):
+        try:
+            mt = os.path.getmtime(jf)
+        except OSError:
+            continue
+        if seen_mtimes.get(jf) == mt:        # unchanged since we last looked
+            continue
+        seen_mtimes[jf] = mt
+        sid = os.path.splitext(os.path.basename(jf))[0]
+        cwd = sid2cwd.get(sid)
+        try:
+            items, _ = cd.read_tail(jf, max_bytes=8_000_000)
+            up = minio_sync.sync_files(sid, cd.changed_files(items, cwd=cwd), cwd=cwd)
+            total += len(up)
+        except Exception as e:
+            print(f"[minio] sweep {sid[:8]}: {e}", flush=True)
+    return total
+
+
+@app.on_event("startup")
+async def _startup_minio():
+    # Continuously mirror files created/edited by any session into MinIO, so work
+    # survives a disk loss or a wiped tree. Only sessions with fresh transcript
+    # activity are re-read, so this stays cheap.
+    if not minio_sync.enabled():
+        st = minio_sync.status()
+        why = "SDK missing" if not st["have_sdk"] else "no credentials configured"
+        print(f"[minio] persistence off ({why})", flush=True)
+        return
+    try:
+        interval = max(5, int(os.environ.get("REMOTECODE_MINIO_INTERVAL", "25")))
+    except ValueError:
+        interval = 25
+    print(f"[minio] persistence on -> bucket '{minio_sync.bucket()}', every {interval}s",
+          flush=True)
+
+    async def _loop():
+        seen = {}
+        # first pass primes mtimes but still uploads current state
+        while True:
+            try:
+                n = await asyncio.to_thread(_minio_sweep_once, seen)
+                if n:
+                    print(f"[minio] synced {n} file(s)", flush=True)
+            except Exception as e:
+                print(f"[minio] sweep failed: {e}", flush=True)
+            await asyncio.sleep(interval)
+
+    asyncio.create_task(_loop())
 
 
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")),
