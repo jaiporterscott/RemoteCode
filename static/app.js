@@ -312,12 +312,16 @@ function preview(path) {
   $("#previewOpen").href = rawUrl(path);
   $("#previewRender").classList.add("hidden");
   $("#previewBody").innerHTML = "loading…";
-  $("#filesPanel").classList.remove("hidden");   // open the side panel if closed
-  $("#filesPanel").classList.add("previewing");
-  $("#spPreview").classList.remove("hidden");
+  $("#previewModal").classList.remove("hidden");   // open the dedicated preview lightbox
   applyActiveFile();
   j("/api/files/preview?path=" + encodeURIComponent(path)).then(d => { pv = d; renderPreview(); })
     .catch(e => { $("#previewBody").innerHTML = ""; $("#previewBody").append(el("div", "binary-card", "error: " + e.message)); });
+}
+function closePreview() {
+  $("#previewModal").classList.add("hidden");
+  $("#previewModal .modal-box").classList.remove("expanded");
+  $("#previewBody").innerHTML = "";                 // stop any playing model-viewer / iframe
+  activePreviewPath = null; applyActiveFile();
 }
 function renderPreview() {
   const d = pv, body = $("#previewBody"); body.innerHTML = "";
@@ -355,12 +359,14 @@ function renderPreview() {
   }
 }
 $("#previewRender").onclick = () => { pvRendered = !pvRendered; renderPreview(); };
-$("#spExpand").onclick = () => $("#filesPanel").classList.toggle("wide");
-$("#pvBack").onclick = () => {
-  $("#filesPanel").classList.remove("previewing");
-  $("#spPreview").classList.add("hidden");
-  activePreviewPath = null; applyActiveFile();
-};
+$("#previewExpand").onclick = () => $("#previewModal .modal-box").classList.toggle("expanded");
+$("#previewClose").onclick = closePreview;
+// click the dimmed backdrop (outside the box) to dismiss
+$("#previewModal").addEventListener("click", e => { if (e.target === $("#previewModal")) closePreview(); });
+// Esc closes the preview (only when it's open)
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("#previewModal").classList.contains("hidden")) closePreview();
+});
 
 /* ---------- settings (agents) ---------- */
 let cfgAgents = [];
@@ -614,11 +620,7 @@ function teardownTerm() {
 
 /* ---------- modals / mobile ---------- */
 $("#filesBtn").onclick = () => $("#filesPanel").classList.toggle("hidden");
-$("#filesClose").onclick = () => {
-  $("#filesPanel").classList.add("hidden");
-  $("#filesPanel").classList.remove("previewing"); $("#spPreview").classList.add("hidden");
-  activePreviewPath = null; applyActiveFile();
-};
+$("#filesClose").onclick = () => $("#filesPanel").classList.add("hidden");
 $("#newClose").onclick = () => $("#newModal").classList.add("hidden");
 $("#menuBtn").onclick = () => { $("#rail").classList.add("open"); $("#rail-scrim").classList.remove("hidden"); };
 $("#rail-scrim").onclick = closeRail;
