@@ -10,11 +10,13 @@ Binds 127.0.0.1:7070 by default with HTTP basic-auth built in.
 """
 import os, re, time, json, glob, stat, base64, asyncio, secrets, subprocess, threading
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body, Request
-from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
+from fastapi.responses import (StreamingResponse, FileResponse, HTMLResponse,
+                               Response, JSONResponse)
 from fastapi.staticfiles import StaticFiles
 
 import config
 import claude_data as cd
+import recover
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -832,12 +834,36 @@ async def _safe_close(ws):
 
 # ---- static -------------------------------------------------------------
 
+# Files that make up the installable app shell. The build version is the newest
+# mtime across all of them, so ANY edit bumps it — which (a) cache-busts the
+# in-page asset URLs and (b) changes the service-worker bytes, triggering a SW
+# update that purges the old offline cache and re-syncs. One number, no manual bump.
+_SHELL_FILES = (
+    "index.html", "app.js", "style.css", "sw.js", "manifest.webmanifest",
+    "vendor/xterm.js", "vendor/xterm.css", "vendor/addon-fit.js",
+    "vendor/highlight.min.js", "vendor/hljs-dark.css", "vendor/hljs-light.css",
+    "vendor/model-viewer.min.js",
+)
+
+
+def build_version() -> str:
+    v = 0
+    for rel in _SHELL_FILES:
+        try:
+            v = max(v, int(os.path.getmtime(os.path.join(APP_DIR, "static", *rel.split("/")))))
+        except OSError:
+            pass
+    return str(v)
+
+
 @app.middleware("http")
 async def _revalidate_assets(request: Request, call_next):
     # StaticFiles/FileResponse send ETag + Last-Modified but no Cache-Control, so
     # browsers heuristically cache the UI and skip revalidation — meaning updates to
     # index.html / app.js / style.css aren't picked up on a normal refresh. Force a
     # revalidation (still cheap: a 304 when unchanged) so the UI is always current.
+    # (The service worker, when installed, is what actually serves these from a
+    # local cache for speed; this header governs the plain-browser fallback.)
     resp = await call_next(request)
     p = request.url.path
     if p == "/" or p.startswith("/static/"):
@@ -845,23 +871,71 @@ async def _revalidate_assets(request: Request, call_next):
     return resp
 
 
+@app.get("/api/version")
+def api_version():
+    return {"version": build_version()}
+
+
+@app.get("/sw.js")
+def service_worker():
+    # Served from the ROOT (not /static/) so its scope covers the whole app. The
+    # build version is baked in, so when any shell file changes the SW body changes,
+    # the browser sees a new worker, installs it, and the activate step drops the
+    # stale cache — that's the "re-sync on version change" guarantee.
+    path = os.path.join(APP_DIR, "static", "sw.js")
+    with open(path, encoding="utf-8") as f:
+        js = f.read().replace("__BUILD__", build_version())
+    return Response(js, media_type="application/javascript",
+                    headers={"Cache-Control": "no-cache",
+                             "Service-Worker-Allowed": "/"})
+
+
 @app.get("/")
 def index():
-    # Serve index.html with app.js / style.css URLs cache-busted by their mtime, so a
-    # fresh page load always pulls the current build even if an old copy was cached
-    # before Cache-Control was in play. Auto-updates on every edit — no manual bump.
+    # Serve index.html with app.js / style.css URLs cache-busted by the build version,
+    # so a fresh load always pulls the current build even if an old copy was cached.
     path = os.path.join(APP_DIR, "static", "index.html")
     with open(path, encoding="utf-8") as f:
         html = f.read()
-    v = 0
-    for name in ("app.js", "style.css"):
-        try:
-            v = max(v, int(os.path.getmtime(os.path.join(APP_DIR, "static", name))))
-        except OSError:
-            pass
+    v = build_version()
     html = html.replace("/static/app.js", f"/static/app.js?v={v}")
     html = html.replace("/static/style.css", f"/static/style.css?v={v}")
     return HTMLResponse(html)
+
+
+# ---- session recovery ---------------------------------------------------
+
+@app.post("/api/recover")
+def api_recover(body: dict = Body(default={})):
+    """Restore recent Claude conversations into tmux sessions (see recover.py).
+    Pass {"dry_run": true} to preview without launching anything."""
+    dry = bool((body or {}).get("dry_run"))
+    hours = (body or {}).get("hours")
+    return {"recovered": recover.recover(dry_run=dry, lookback_hours=hours)}
+
+
+@app.on_event("startup")
+async def _startup_recover():
+    # After a reboot the tmux server is empty; bring back the conversations that
+    # were live before shutdown. Runs once, off-thread, and never blocks startup.
+    if not recover.enabled():
+        return
+
+    async def _go():
+        # small delay so tmux-claude.service has created the default socket first
+        await asyncio.sleep(3)
+        try:
+            res = await asyncio.to_thread(recover.recover)
+            for r in res:
+                print(f"[recover] {r['action']:>8}  {r['name']}  ({r['session_id'][:8]})"
+                      + (f"  {r['label']}" if r.get("label") else ""), flush=True)
+            done = [r for r in res if r["action"] == "restored"]
+            if done:
+                print(f"[recover] restored {len(done)} session(s) into tmux", flush=True)
+        except Exception as e:
+            print(f"[recover] failed: {e}", flush=True)
+
+    asyncio.create_task(_go())
 
 
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")),

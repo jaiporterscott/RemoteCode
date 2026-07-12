@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111417">
 <title>RemoteCode</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RemoteCode">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/hljs-dark.css">
 <link rel="stylesheet" href="/static/style.css">
@@ -144,5 +151,23 @@
 <script src="/static/vendor/highlight.min.js"></script>
 <script type="module" src="/static/vendor/model-viewer.min.js"></script>
 <script src="/static/app.js"></script>
+<script>
+// Register the service worker for offline/instant loads. The worker itself is
+// versioned server-side, so a new build auto-updates and re-syncs the cache.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js').then(function (reg) {
+      // When a new worker takes control (version bump), reload once so the running
+      // page picks up the fresh assets instead of the ones it booted with.
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    }).catch(function () { /* offline / unsupported — app still works online */ });
+  });
+}
+</script>
 </body>
 </html>
