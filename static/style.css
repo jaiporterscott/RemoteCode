@@ -69,9 +69,24 @@ body{background:var(--bg);color:var(--fg);
 .chip .p{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chip .sz{color:var(--dim);font-size:11px}
 /* full command block in chat */
-.cmd{margin:2px 0 0;background:#0b0e11;border:1px solid var(--line);border-radius:7px;
+/* ran-command box: collapsed by default (first line preview), click to expand */
+.cmdbox{margin-top:2px;align-self:stretch;max-width:100%;background:#0b0e11;
+  border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.cmd-toggle{display:flex;align-items:center;gap:8px;width:100%;text-align:left;cursor:pointer;
+  background:transparent;border:0;padding:7px 10px;color:#cfe3ff;
+  font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}
+.cmd-toggle:hover{background:#11161c}
+.cmd-toggle .caret{flex:0 0 auto;width:0;height:0;margin:0 3px;
+  border-style:solid;border-width:5px 0 5px 8px;
+  border-color:transparent transparent transparent var(--accent);
+  transition:transform .12s}
+.cmdbox:not(.collapsed) .cmd-toggle .caret{transform:rotate(90deg)}
+.cmd-prev{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cmdbox:not(.collapsed) .cmd-prev{opacity:.45}
+.cmd{margin:0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;
   padding:8px 10px;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#cfe3ff;
-  white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;align-self:stretch}
+  white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}
+.cmdbox.collapsed .cmd{display:none}
 .chip-thumb{margin-top:2px;max-width:240px;max-height:180px;border-radius:8px;
   border:1px solid var(--line);cursor:pointer;display:block}
 .empty{color:var(--dim);margin:auto;text-align:center;padding:24px}

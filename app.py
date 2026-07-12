@@ -10,7 +10,7 @@ Binds 127.0.0.1:7070 by default with HTTP basic-auth built in.
 """
 import os, re, time, json, glob, stat, base64, asyncio, secrets, subprocess, threading
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body, Request
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -832,9 +832,36 @@ async def _safe_close(ws):
 
 # ---- static -------------------------------------------------------------
 
+@app.middleware("http")
+async def _revalidate_assets(request: Request, call_next):
+    # StaticFiles/FileResponse send ETag + Last-Modified but no Cache-Control, so
+    # browsers heuristically cache the UI and skip revalidation — meaning updates to
+    # index.html / app.js / style.css aren't picked up on a normal refresh. Force a
+    # revalidation (still cheap: a 304 when unchanged) so the UI is always current.
+    resp = await call_next(request)
+    p = request.url.path
+    if p == "/" or p.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(APP_DIR, "static", "index.html"))
+    # Serve index.html with app.js / style.css URLs cache-busted by their mtime, so a
+    # fresh page load always pulls the current build even if an old copy was cached
+    # before Cache-Control was in play. Auto-updates on every edit — no manual bump.
+    path = os.path.join(APP_DIR, "static", "index.html")
+    with open(path, encoding="utf-8") as f:
+        html = f.read()
+    v = 0
+    for name in ("app.js", "style.css"):
+        try:
+            v = max(v, int(os.path.getmtime(os.path.join(APP_DIR, "static", name))))
+        except OSError:
+            pass
+    html = html.replace("/static/app.js", f"/static/app.js?v={v}")
+    html = html.replace("/static/style.css", f"/static/style.css?v={v}")
+    return HTMLResponse(html)
 
 
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")),

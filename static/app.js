@@ -255,8 +255,14 @@ function chipEl(c) {
   }
   if (!c.ok) e.append(el("span", null, "⚠"));
   wrap.append(e);
-  if (c.tool === "Bash" && c.detail) {                 // full command, untruncated
-    const pre = el("pre", "cmd"); pre.textContent = c.detail; wrap.append(pre);
+  if (c.tool === "Bash" && c.detail) {                 // full command — collapsed by default, click to expand
+    const box = el("div", "cmdbox collapsed");
+    const head = el("button", "cmd-toggle"); head.type = "button";
+    head.append(el("span", "caret"));                  // CSS-drawn triangle (font-independent)
+    head.append(el("span", "cmd-prev", c.detail.split("\n")[0]));
+    const pre = el("pre", "cmd"); pre.textContent = c.detail;
+    head.onclick = () => box.classList.toggle("collapsed");
+    box.append(head); box.append(pre); wrap.append(box);
   }
   if (c.path && IMG_RE.test(c.path)) {                 // images auto-preview
     const img = el("img", "chip-thumb"); img.src = rawUrl(c.path); img.loading = "lazy";
