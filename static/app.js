@@ -98,13 +98,20 @@ function cbFlash(t, err) {
   const e = $("#cbMsg"); e.textContent = t || ""; e.className = "cb-msg" + (err ? " err" : "");
   if (t) setTimeout(() => { if (e.textContent === t) { e.textContent = ""; e.className = "cb-msg"; } }, 2600);
 }
+function setModelVer(label, title) {
+  const e = $("#modelVer");
+  e.textContent = label || "";
+  e.title = title || "";
+}
 async function refreshClaudeBar() {
   if (!cur || !curChat || curReadonly) return;
-  setActiveMode(null); cbFlash("");
+  setActiveMode(null); cbFlash(""); setModelVer("");
   try {
     const d = await j(`/api/sessions/${encodeURIComponent(cur)}/claude`);
     setActiveMode(d.mode);
     if (d.model) $("#modelSel").value = d.model;   // reflect the model actually running
+    // the alias says "opus", the badge says *which* opus
+    setModelVer(d.modelLabel, d.modelId ? "running: " + d.modelId : "");
   } catch (e) { /* non-claude or unreachable — bar simply shows no active mode */ }
 }
 $("#modelSel").addEventListener("change", async e => {
@@ -114,6 +121,8 @@ $("#modelSel").addEventListener("change", async e => {
     const d = await j(`/api/sessions/${encodeURIComponent(cur)}/model`,
       { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: m }) });
     cbFlash("model → " + m + (d && d.savesDefault ? " · saved as default" : ""));
+    // the concrete id comes from the transcript, so it only lands on the next reply
+    setModelVer("…", "version resolves on Claude's next reply");
   } catch (err) { cbFlash("model failed: " + err.message, true); }
 });
 document.querySelectorAll("#modeSeg .seg-btn").forEach(b => {
