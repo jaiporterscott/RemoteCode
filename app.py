@@ -453,13 +453,17 @@ def _detect_mode(pane_text: str):
 @app.get("/api/sessions/{sess}/claude")
 def api_claude_state(sess: str):
     s = _require_claude_tmux(sess)
-    model = None
+    model = model_id = None
     if s.get("sid"):
         jp = cd.transcript_path(s["sid"])
         if jp:
-            model = cd.latest_model_alias(jp)
+            model_id = cd.latest_model(jp)
+            model = cd.model_alias(model_id)
     return {"models": CLAUDE_MODELS, "modes": CLAUDE_MODES,
-            "mode": _detect_mode(_capture(sess, s)), "model": model}
+            "mode": _detect_mode(_capture(sess, s)), "model": model,
+            # concrete id + version label: the dropdown alias alone can't say
+            # whether "opus" is Opus 5 or the previous generation
+            "modelId": model_id, "modelLabel": cd.model_label(model_id)}
 
 
 @app.post("/api/sessions/{sess}/model")

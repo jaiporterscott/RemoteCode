@@ -265,15 +265,14 @@ def attach_outputs(items, cwd: str = None):
     return items
 
 
-_MODEL_ALIASES = [("fable", "fable"), ("sonnet", "sonnet"),
-                  ("haiku", "haiku"), ("opus", "opus")]
+_MODEL_FAMILIES = ["fable", "sonnet", "haiku", "opus"]
 
 
-def latest_model_alias(path: str):
-    """Dropdown alias (opus/sonnet/haiku/fable) for the model on the most recent
-    assistant turn in the transcript, or None. Reflects what's actually running —
-    `default`/`opusplan` resolve to their concrete model here, which is the honest
-    answer to 'what model is selected'."""
+def latest_model(path: str):
+    """Raw model id (e.g. "claude-opus-5") from the most recent assistant turn in
+    the transcript, or None. Reflects what's actually running — `default`/
+    `opusplan` resolve to their concrete model here, which is the honest answer
+    to 'what model is selected'."""
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
@@ -293,13 +292,35 @@ def latest_model_alias(path: str):
         m = d.get("message")
         if isinstance(m, dict) and m.get("model"):
             model = m["model"]           # keep scanning — the last one wins
-    if not model:
-        return None
-    low = model.lower()
-    for needle, alias in _MODEL_ALIASES:
-        if needle in low:
-            return alias
+    return model or None
+
+
+def model_alias(model: str):
+    """Dropdown alias (opus/sonnet/haiku/fable) for a model id, or None."""
+    low = (model or "").lower()
+    for fam in _MODEL_FAMILIES:
+        if fam in low:
+            return fam
     return None
+
+
+def model_label(model: str):
+    """Human label carrying the *version*: "claude-opus-5" -> "Opus 5",
+    "claude-haiku-4-5-20251001" -> "Haiku 4.5", "claude-3-5-sonnet-20241022" ->
+    "Sonnet 3.5". Family and version tokens are matched position-independently
+    because the two id eras order them differently. Unknown ids pass through raw."""
+    fam = model_alias(model)
+    if not fam:
+        return model or None
+    # <4 digits keeps the version numbers and drops the 8-digit date stamp
+    nums = [t for t in re.split(r"[-_.]", model.lower())
+            if t.isdigit() and len(t) < 4]
+    return (fam.capitalize() + " " + ".".join(nums)).strip()
+
+
+def latest_model_alias(path: str):
+    """Back-compat: dropdown alias for the most recent assistant turn's model."""
+    return model_alias(latest_model(path))
 
 
 def history_versions(session_id: str, path: str) -> list:

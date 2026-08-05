@@ -219,6 +219,10 @@ body{background:var(--bg);color:var(--fg);
 #modelSel{background:var(--bg);color:var(--fg);border:1px solid var(--line);
   border-radius:8px;padding:6px 9px;font:inherit;cursor:pointer}
 #modelSel:focus{outline:none;border-color:var(--accent2)}
+/* resolved model version next to the alias dropdown ("Opus" -> which Opus?) */
+.cb-ver{font-size:11px;color:var(--dim);white-space:nowrap;
+  border:1px solid var(--line);border-radius:999px;padding:2px 8px}
+.cb-ver:empty{display:none}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--bg)}
 .seg-btn{background:none;color:var(--dim);border:0;border-left:1px solid var(--line);
   padding:6px 11px;cursor:pointer;font:inherit;white-space:nowrap}
