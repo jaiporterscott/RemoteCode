@@ -14,7 +14,7 @@ OMC_STATE_DIR > .omc-workspace marker > git toplevel > cwd.
 Everything here is best-effort: a missing dir, a truncated write, or a state file
 written by a future OMC version must degrade to an empty/partial answer, never raise.
 """
-import os, json, glob, time, subprocess
+import os, re, json, glob, time, datetime, subprocess
 
 import claude_data as cd
 
@@ -32,6 +32,8 @@ CANCEL_COMMAND = "/oh-my-claudecode:cancel"
 # OMC's HUD treats state files older than this as abandoned; we use it only to
 # decide whether a mode file that omits `active` is still worth showing.
 MAX_STATE_AGE = 2 * 60 * 60
+# Files written into state/ that are control-plane signals, not workflows.
+_SIGNAL_FILES = ("cancel-signal",)
 
 _SKILL_CACHE = {}          # cwd -> (expires_at, [skill dicts])
 _SKILL_TTL = 60.0
@@ -251,12 +253,33 @@ def is_known_command(command, cwd=None) -> bool:
 
 # ---- live mode state ----------------------------------------------------
 
+def _expired(stamp) -> bool:
+    """True when an ISO-8601 `expires_at` is in the past. Unparseable => not
+    expired, so a format we don't know can never hide a live mode."""
+    try:
+        t = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=datetime.timezone.utc)
+    return t < datetime.datetime.now(datetime.timezone.utc)
+
+
 def _mode_from(path, data):
     """One `modes[]` entry, or None when the file isn't an active mode."""
     if not isinstance(data, dict):
         return None
     meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
     name = _str(meta.get("mode")) or os.path.basename(path)[:-len("-state.json")]
+    # Not every *-state.json is a workflow. `state_clear` drops a short-lived
+    # cancel-signal file with active:true, which would otherwise render as a
+    # running mode called "cancel-signal" — and, since it carries its own
+    # expiry rather than being deleted, would render forever.
+    if os.path.basename(path)[:-len("-state.json")] in _SIGNAL_FILES:
+        return None
+    expires = _str(data.get("expires_at"))
+    if expires and _expired(expires):
+        return None
     if "active" in data:
         active = _bool(data.get("active"))
     else:
@@ -342,6 +365,15 @@ _AGENT_TOOLS = ("Task", "Agent")
 # A backgrounded agent gets its tool_result the instant it spawns, so
 # "a tool_result exists" alone would report every worker as finished.
 _SPAWN_MARKERS = ("spawned successfully", "is now running")
+# ...and it never gets a second one: a background agent's completion arrives as
+# a separate notification naming the agent, not as a tool_result on its id. So
+# for those, finishing is detected by name from the termination markers.
+_DONE_MARKERS = ("teammate_terminated", "shutdown_approved", "has shut down")
+# Pull the name out of the specific slots that carry it, rather than every word
+# in the notice — a bare token scan would mark an agent named "message" or
+# "from" as finished the moment any other agent shut down.
+_NAME_RES = (re.compile(r'"(?:from|teammate_id|recipient|agent|name)"\s*:\s*"([A-Za-z0-9][\w-]{0,63})"'),
+             re.compile(r'([A-Za-z0-9][\w-]{0,63}) has shut down'))
 
 
 def _result_text(block) -> str:
@@ -364,10 +396,22 @@ def _blocks(rec, role):
     return [b for b in c if isinstance(b, dict)] if isinstance(c, list) else []
 
 
+def _finished_names(rec) -> set:
+    """Agent names named by a termination notice in this record, if any."""
+    raw = json.dumps(rec.get("message") or {})
+    if not any(m in raw for m in _DONE_MARKERS):
+        return set()
+    out = set()
+    for rx in _NAME_RES:
+        out |= set(rx.findall(raw))
+    return out
+
+
 def todos_and_agents(session_id, limit=20):
     recs = _tail_records(session_id)
-    todos, agents, done = [], [], set()
+    todos, agents, done, finished = [], [], set(), set()
     for rec in recs:
+        finished |= _finished_names(rec)
         for b in _blocks(rec, "user"):
             if b.get("type") == "tool_result" and b.get("tool_use_id"):
                 low = _result_text(b).lower()
@@ -393,7 +437,7 @@ def todos_and_agents(session_id, limit=20):
                                "status": "running",
                                "at": ts})
     for a in agents:
-        if a["id"] in done:
+        if a["id"] in done or (a["name"] and a["name"] in finished):
             a["status"] = "done"
     return todos, agents[-limit:][::-1]
 
