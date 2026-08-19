@@ -68,6 +68,8 @@ function selectSession(id) {
   $("#curName").textContent = s ? s.name : id;
   $("#curAgent").textContent = s ? s.agent : "";
   applyCaps();
+  if (window.OMCStatus) window.OMCStatus.setSession(id);
+  if (window.OMCCommands) window.OMCCommands.setSession(id);
   document.querySelectorAll("#sessionList li").forEach(li => li.classList.toggle("active", li.dataset.id === id));
   if (curChat) { showChat(); startStream(); loadFiles(); refreshClaudeBar(); }
   else { setFiles([]); showTerm(); }   // non-chat agents: terminal is the view
@@ -216,6 +218,8 @@ function startStream() {
   sse.addEventListener("status", e => { const d = JSON.parse(e.data); setStatus(d.status, d.waitingFor); });
   sse.addEventListener("info", e => { chat.innerHTML = ""; chat.append(el("div", "empty", JSON.parse(e.data).message)); });
   sse.addEventListener("closed", () => setStatus("idle"));
+  // OMC state (active modes, todos, subagents, artifacts) rides the same stream.
+  sse.addEventListener("omc", e => { try { window.OMCStatus && window.OMCStatus.update(JSON.parse(e.data)); } catch (err) {} });
 }
 function addItem(it) {
   if (it.uuid && seen.has(it.uuid)) return;
@@ -436,11 +440,17 @@ $("#promptForm").addEventListener("submit", async e => {
   const list = ready.map(a => a.path).join(" ");
   const sent = list ? (text ? `${text} — files: ${list}` : `Please look at these uploaded files: ${list}`) : text;
   clearAttachments();
-  const emptyEl = $("#chat").querySelector(".empty"); if (emptyEl) emptyEl.remove();
-  addItem({ role: "user", text: sent, chips: [], uuid: "opt-" + Date.now() }); scrollChat(true);
-  try { await j(`/api/sessions/${encodeURIComponent(cur)}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: sent }) }); }
-  catch (err) { addItem({ role: "assistant", text: "⚠ send failed: " + err.message, chips: [] }); }
+  await sendPrompt(sent);
 });
+// Types one line into the session, echoed optimistically so the chat feels instant
+// (the real item arrives moments later on the SSE stream). Shared with OMCCommands.
+async function sendPrompt(text) {
+  if (!text || !cur) return;
+  const emptyEl = $("#chat").querySelector(".empty"); if (emptyEl) emptyEl.remove();
+  addItem({ role: "user", text, chips: [], uuid: "opt-" + Date.now() }); scrollChat(true);
+  try { await j(`/api/sessions/${encodeURIComponent(cur)}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }); }
+  catch (err) { addItem({ role: "assistant", text: "⚠ send failed: " + err.message, chips: [] }); }
+}
 
 /* ---------- file upload (attach button · drag-drop · paste image) ---------- */
 let pendingAttachments = [];   // {id, name, size, path|null, uploading, error}
@@ -634,6 +644,25 @@ $("#newClose").onclick = () => $("#newModal").classList.add("hidden");
 $("#menuBtn").onclick = () => { $("#rail").classList.add("open"); $("#rail-scrim").classList.remove("hidden"); };
 $("#rail-scrim").onclick = closeRail;
 function closeRail() { $("#rail").classList.remove("open"); $("#rail-scrim").classList.add("hidden"); }
+
+/* ---------- oh-my-claudecode panels ---------- */
+// omc-status.js / omc-commands.js are loaded AFTER this file, so they aren't on
+// `window` yet — wait for the parser to finish before handing them their hooks.
+// Both mount their own DOM and no-op silently when OMC isn't installed.
+document.addEventListener("DOMContentLoaded", () => {
+  if (window.OMCStatus) {
+    window.OMCStatus.init({ sessionId: cur, openArtifact: path => preview(path) });
+  }
+  if (window.OMCCommands) {
+    window.OMCCommands.init({
+      sessionId: cur,
+      sendPrompt,
+      // A failed /omc/run is surfaced in the chat like any other send failure,
+      // rather than being retried down a different path.
+      onRun: r => { if (!r.ok) addItem({ role: "assistant", text: `⚠ ${r.command} didn't run: ${r.error}`, chips: [] }); },
+    });
+  }
+});
 
 refresh();
 setInterval(refresh, 3000);

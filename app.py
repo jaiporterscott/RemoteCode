@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 import claude_data as cd
+import omc_data as omc
 import recover
 import minio_sync
 
@@ -727,6 +728,80 @@ def api_raw(path: str):
     return FileResponse(path, media_type=mt) if mt else FileResponse(path)
 
 
+# ---- oh-my-claudecode bridge --------------------------------------------
+# OMC keeps its own state on disk (.omc/), so the panel is a pure reader; the
+# only writes go back through the SAME tmux keystroke path as a typed prompt —
+# there is no shell anywhere in here, and a command must be one we discovered.
+
+def _omc_cwd(s: dict):
+    return (s.get("info") or {}).get("cwd")
+
+
+def _omc_snapshot(s: dict) -> dict:
+    return omc.snapshot(_omc_cwd(s), s.get("sid"))
+
+
+def _omc_roots(sess: str = None) -> list:
+    """Every .omc root this app may serve artifacts from: the one belonging to
+    `sess` when given, else every session's plus our own cwd."""
+    if sess:
+        return [omc.state_root(_omc_cwd(resolve(sess)))]
+    roots = {omc.state_root(os.getcwd())}
+    for s in all_sessions():
+        roots.add(omc.state_root((s.get("info") or {}).get("cwd")))
+    return [r for r in roots if r]
+
+
+def _omc_send(sess: str, s: dict, line: str):
+    # identical to api_prompt: literal keys, then a separate Enter
+    tmux("send-keys", "-t", sess, "-l", "--", line, socket=s["socket"])
+    tmux("send-keys", "-t", sess, "Enter", socket=s["socket"])
+
+
+@app.get("/api/omc/skills")
+def api_omc_skills(sess: str = None):
+    cwd = _omc_cwd(resolve(sess)) if sess else None
+    sk = omc.skills(cwd)
+    return {"available": bool(sk), "skills": sk}
+
+
+@app.get("/api/sessions/{sess}/omc")
+def api_omc(sess: str):
+    return _omc_snapshot(resolve(sess))
+
+
+@app.post("/api/sessions/{sess}/omc/run")
+def api_omc_run(sess: str, body: dict = Body(...)):
+    s = _require_tmux(sess)
+    command = (body.get("command") or "").strip()
+    if not omc.is_known_command(command, _omc_cwd(s)):
+        raise HTTPException(400, "unknown OMC command")
+    # free text, sent as literal keys exactly like a prompt. Newlines would
+    # submit the line early, so they collapse to spaces.
+    args = " ".join((body.get("args") or "").split())
+    line = (command + " " + args).strip()
+    _omc_send(sess, s, line)
+    return {"ok": True, "sent": line}
+
+
+@app.post("/api/sessions/{sess}/omc/cancel")
+def api_omc_cancel(sess: str):
+    s = _require_tmux(sess)
+    _omc_send(sess, s, omc.CANCEL_COMMAND)
+    return {"ok": True, "sent": omc.CANCEL_COMMAND}
+
+
+@app.get("/api/omc/artifact")
+def api_omc_artifact(path: str, sess: str = None):
+    roots = _omc_roots(sess)
+    if not omc.inside_roots(roots, path):
+        raise HTTPException(403, "path is not inside an OMC state root")
+    art = omc.read_artifact(roots, path)
+    if art is None:
+        raise HTTPException(404, "not found")
+    return art
+
+
 @app.get("/api/sessions/{sess}/stream")
 async def api_stream(sess: str):
     s0 = resolve(sess)
@@ -763,6 +838,20 @@ async def api_stream(sess: str):
                                  "If it's asking to trust the folder or another "
                                  "prompt, open the terminal to answer it."})
             return
+
+        # OMC panel: one push at init, then only when the snapshot actually
+        # changes. Recomputed every other tick — it stats a handful of files, but
+        # not at 1 Hz — and never allowed to take the stream down with it.
+        def omc_payload():
+            try:
+                return json.dumps(_omc_snapshot(resolve(sess)))
+            except Exception:
+                return None
+
+        omc_json = omc_payload()
+        if omc_json:
+            yield f"event: omc\ndata: {omc_json}\n\n"
+        tick = 0
         while True:
             if readonly:
                 info = cd.live_sessions().get(sid)
@@ -784,6 +873,12 @@ async def api_stream(sess: str):
                 last_status = st
                 yield _sse("status", {"status": st,
                                       "waitingFor": (info or {}).get("waitingFor")})
+            tick += 1
+            if tick % 2 == 0:
+                cur = omc_payload()
+                if cur and cur != omc_json:
+                    omc_json = cur
+                    yield f"event: omc\ndata: {cur}\n\n"
             await asyncio.sleep(1.0)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
@@ -875,10 +970,18 @@ async def _safe_close(ws):
 # update that purges the old offline cache and re-syncs. One number, no manual bump.
 _SHELL_FILES = (
     "index.html", "app.js", "style.css", "sw.js", "manifest.webmanifest",
+    "omc-status.js", "omc-status.css", "omc-commands.js", "omc-commands.css",
     "vendor/xterm.js", "vendor/xterm.css", "vendor/addon-fit.js",
     "vendor/highlight.min.js", "vendor/hljs-dark.css", "vendor/hljs-light.css",
     "vendor/model-viewer.min.js",
 )
+
+
+# The shell assets referenced from index.html by a plain path — each gets ?v=
+# appended on serve. Longest-first so "omc-status.css" can't be eaten by a
+# prefix match on a shorter name.
+_BUSTED = ("app.js", "style.css", "omc-status.js", "omc-status.css",
+           "omc-commands.js", "omc-commands.css")
 
 
 def build_version() -> str:
@@ -933,8 +1036,8 @@ def index():
     with open(path, encoding="utf-8") as f:
         html = f.read()
     v = build_version()
-    html = html.replace("/static/app.js", f"/static/app.js?v={v}")
-    html = html.replace("/static/style.css", f"/static/style.css?v={v}")
+    for rel in _BUSTED:
+        html = html.replace(f"/static/{rel}", f"/static/{rel}?v={v}")
     return HTMLResponse(html)
 
 

@@ -1,0 +1,112 @@
+/* omc-status.css — live OMC telemetry strip. Reuses style.css custom properties
+   (--bg/--bg2/--bg3/--line/--fg/--dim/--accent/--accent2/--ok/--err/--busy/--wait)
+   and existing utility classes (.hidden, .btn, .dot, .dot.busy) — no new hexes. */
+
+#omcStatus{position:relative;border-top:1px solid var(--line);background:var(--bg2);
+  font-size:12.5px;flex:0 0 auto}
+
+/* ---------- collapsed strip ---------- */
+.omc-strip{display:flex;align-items:center;gap:10px;min-height:44px;
+  padding:6px 10px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.omc-strip:hover{background:var(--bg3)}
+.omc-strip:focus-visible{outline:2px solid var(--accent2);outline-offset:-2px}
+
+.omc-modes{display:flex;align-items:center;gap:6px;overflow-x:auto;flex:1 1 auto;min-width:0;
+  scrollbar-width:none}
+.omc-modes::-webkit-scrollbar{display:none}
+.omc-idle{color:var(--dim);white-space:nowrap}
+
+.omc-mode-chip{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;
+  background:var(--bg3);border:1px solid var(--line);border-radius:20px;padding:4px 10px;
+  max-width:60vw}
+.omc-mode-chip.done{opacity:.55}
+.omc-mode-name{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:10.5px}
+.omc-mode-chip.tone-accent .omc-mode-name{color:var(--accent)}
+.omc-mode-chip.tone-accent2 .omc-mode-name{color:var(--accent2)}
+.omc-mode-chip.tone-ok .omc-mode-name{color:var(--ok)}
+.omc-mode-chip.tone-wait .omc-mode-name{color:var(--wait)}
+.omc-mode-chip.tone-dim .omc-mode-name{color:var(--dim)}
+.omc-mode-phase,.omc-mode-iter{color:var(--dim);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:26vw}
+.omc-mode-iter{font:11px/1 ui-monospace,Menlo,Consolas,monospace}
+.omc-elapsed{color:var(--dim);font:11px/1 ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+
+.omc-todo-badge{flex:0 0 auto;font-size:11px;color:var(--accent);border:1px solid var(--line);
+  border-radius:20px;padding:2px 8px;white-space:nowrap}
+.omc-spacer{flex:1 1 auto;min-width:4px}
+.omc-cancel{flex:0 0 auto;min-height:44px}
+.omc-caret{flex:0 0 auto;width:0;height:0;margin:0 2px;
+  border-style:solid;border-width:6px 5px 0 5px;border-color:var(--dim) transparent transparent transparent;
+  transition:transform .12s}
+.omc-strip.expanded .omc-caret{transform:rotate(180deg)}
+@media (prefers-reduced-motion: reduce){.omc-caret{transition:none}}
+
+/* screen-reader-only live region — announces phase changes without a visible spam log */
+.omc-live{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+/* ---------- expandable panel: an overlay (never pushes #chat's layout/scroll) ---------- */
+.omc-panel{position:absolute;left:0;right:0;top:100%;z-index:22;max-height:min(60vh,520px);
+  overflow-y:auto;background:var(--bg2);border:1px solid var(--line);border-top:0;
+  border-radius:0 0 12px 12px;box-shadow:0 14px 30px #000a;
+  padding:4px 0 8px}
+.omc-section{padding:8px 12px}
+.omc-section + .omc-section{border-top:1px solid var(--line)}
+.omc-section-title{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+  margin-bottom:6px}
+.omc-empty{color:var(--dim);padding:4px 0}
+
+/* todos */
+.omc-todolist{display:flex;flex-direction:column;gap:2px}
+.omc-todo{display:flex;align-items:flex-start;gap:9px;padding:7px 4px;border-radius:8px;min-height:32px}
+.omc-todo-mark{flex:0 0 auto;width:16px;height:20px;display:flex;align-items:center;justify-content:center;
+  color:var(--dim);font-size:12px}
+.omc-todo-completed .omc-todo-mark{color:var(--ok)}
+.omc-todo-completed .omc-todo-text{color:var(--dim);text-decoration:line-through}
+.omc-todo-in_progress{background:var(--bg3);border:1px solid var(--line)}
+.omc-todo-in_progress .omc-todo-text{font-weight:600;color:var(--fg)}
+.omc-todo-pending .omc-todo-text{color:var(--dim)}
+.omc-todo-text{flex:1;min-width:0;overflow-wrap:anywhere}
+
+/* subagents */
+.omc-agentlist{display:flex;flex-direction:column;gap:2px}
+.omc-agent{display:flex;align-items:center;gap:9px;padding:6px 4px;min-height:32px}
+.omc-agent.done{opacity:.5}
+.omc-agent-meta{flex:1;min-width:0}
+.omc-agent-desc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.omc-agent-type{color:var(--dim);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.omc-more{color:var(--dim);padding:5px 4px;font-size:11px}
+
+/* artifacts */
+.omc-artgroup + .omc-artgroup{margin-top:8px}
+.omc-artgroup-title{color:var(--accent2);font-size:11px;font-weight:600;margin-bottom:3px}
+.omc-artifact{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+  min-height:44px;padding:7px 8px;background:none;border:0;border-radius:8px;color:var(--fg);
+  font:inherit;text-align:left;cursor:pointer}
+.omc-artifact:hover{background:var(--bg3)}
+.omc-art-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.omc-art-meta{flex:0 0 auto;color:var(--dim);font-size:11px;white-space:nowrap}
+
+@media (prefers-reduced-motion: reduce){
+  #omcStatus .dot.busy{animation:none;opacity:1}
+}
+
+/* ---------- artifact fallback sheet (used only when the host app didn't pass openArtifact) ---------- */
+.omc-artoverlay{position:fixed;inset:0;background:#000a;z-index:55;display:flex;
+  align-items:center;justify-content:center;padding:16px;
+  padding-bottom:max(16px,env(safe-area-inset-bottom))}
+.omc-artbox{background:var(--bg2);border:1px solid var(--line);border-radius:14px;
+  max-width:min(900px,96vw);width:100%;max-height:88dvh;display:flex;flex-direction:column;overflow:hidden}
+.omc-artbox-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:10px 14px;border-bottom:1px solid var(--line)}
+.omc-artbox-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;
+  font-family:ui-monospace,Menlo,Consolas,monospace}
+.omc-artbox-body{margin:0;overflow:auto;flex:1;min-height:0}
+.omc-artbox-body code{display:block;padding:14px;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;color:var(--fg)}
+
+@media(max-width:760px){
+  .omc-mode-chip{max-width:80vw}
+  .omc-mode-phase,.omc-mode-iter{max-width:34vw}
+  .omc-panel{max-height:66vh}
+}

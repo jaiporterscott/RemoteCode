@@ -34,6 +34,8 @@ leaving the chat.
   syntax‑highlighted code (colour scheme by language), **auto‑previewed images**,
   **interactive GLB/glTF 3D** models, or a size‑aware download card for anything else.
   Widen the panel for a bigger view.
+- **oh-my-claudecode, natively** — if OMC is installed, its skills are one tap away
+  and its runs are visible in the chat. See [OMC in the chat](#omc-in-the-chat).
 - **Live terminal** for *any* tmux session over a websocket (xterm.js) — handle
   interactive prompts, or use agents that have no chat provider.
 - **Optional auth**, off by default (see Security). Binds to `127.0.0.1`.
@@ -59,6 +61,28 @@ A control bar sits above the prompt on any Claude Code session:
 The same badge‑reading trick powers the **interactive prompt** support: menus like the
 trust check, permission requests, plan approval, and the model picker are detected from
 the terminal and surfaced as tap targets, then driven with arrow keys + Enter.
+
+## OMC in the chat
+
+If [oh-my-claudecode](https://github.com/oh-my-claudecode/oh-my-claudecode) is installed,
+RemoteCode reads its on-disk state (`.omc/`) the same way it reads Claude's transcript —
+no plugin, no extra process, and it degrades to nothing when OMC isn't there.
+
+- **Launch skills by tap.** A chip bar above the prompt carries the tier-0 workflows
+  (autopilot, ultrawork, ralph, team, ralplan); `⋯ All skills` opens a searchable sheet
+  of everything discovered on disk. Typing `/` at the start of the prompt opens an
+  autocomplete of the same list — so you never have to spell
+  `/oh-my-claudecode:autopilot` on a phone keyboard.
+- **Watch the run.** A status strip shows the active mode, its phase, `iteration N/M`
+  and elapsed time, with the todo checklist, the subagents currently working, and the
+  artifacts OMC has written (notepad, plans, handoffs, research) one tap below. Cancel
+  the whole thing from the same strip.
+- **Read the artifacts** in the normal file preview — plans and handoffs are just
+  markdown, so a long autopilot run is reviewable from a phone without the terminal.
+
+Skills are discovered from the OMC plugin cache, `~/.claude/skills`, and the project's
+own `.omc/skills`. Only a command that matches a discovered skill can be launched
+through the API, and artifact reads are confined to the session's own `.omc` root.
 
 ## Quick start
 
@@ -119,9 +143,11 @@ RemoteCode can spawn shells and attach to terminals, so treat it like SSH:
   prompt via `tmux send-keys`, SSE transcript stream, file preview/raw, and a PTY
   websocket (`tmux attach`) for the terminal.
 - `claude_data.py` — parses Claude's transcript into chat items + changed files.
+- `omc_data.py` — reads oh-my-claudecode state, skills, todos, subagents and artifacts.
 - `config.py` — agents, projects, auth.
 - `static/` — single‑page UI (vanilla JS) with vendored xterm.js, highlight.js and
-  `<model-viewer>`.
+  `<model-viewer>`. `omc-commands.js` (skill launcher) and `omc-status.js` (run
+  telemetry) mount themselves into the chat and no‑op when OMC isn't installed.
 
 ## License
 
