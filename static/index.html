@@ -15,6 +15,8 @@
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/vendor/hljs-dark.css">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/omc-status.css">
+<link rel="stylesheet" href="/static/omc-commands.css">
 </head>
 <body>
 <div id="app">
@@ -156,6 +158,10 @@
 <script src="/static/vendor/highlight.min.js"></script>
 <script type="module" src="/static/vendor/model-viewer.min.js"></script>
 <script src="/static/app.js"></script>
+<!-- OMC panels mount themselves into the chat; loaded after app.js so their host
+     elements (#claudeBar, #promptForm) already exist and app.js globals are defined. -->
+<script src="/static/omc-status.js"></script>
+<script src="/static/omc-commands.js"></script>
 <script>
 // Register the service worker for offline/instant loads. The worker itself is
 // versioned server-side, so a new build auto-updates and re-syncs the cache.
