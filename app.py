@@ -341,6 +341,8 @@ def api_sessions():
             items, _ = cd.read_tail(cd.transcript_path(sid), max_bytes=262144)
             entry["changed"] = len(cd.changed_files(items))
         out.append(entry)
+    # mirror pane names to disk so a tmux crash cannot lose them (see recover.py)
+    config.remember_pane_names((e["sessionId"], e["name"]) for e in out)
     return out
 
 

@@ -12,6 +12,7 @@ Everything is overridable by environment variable so the app is portable:
 Config files (optional) live in  $XDG_CONFIG_HOME/remotecode  (default ~/.config/remotecode):
   password        the generated basic-auth password
   agents.json     override the built-in agent registry
+  pane-names.json sessionId -> pane name, so names survive a tmux server crash
 """
 import os, json, shutil, secrets
 
@@ -83,6 +84,52 @@ def save_agents(agents: list):
     clean = [{k: a[k] for k in keep if k in a} for a in agents if a.get("key") and a.get("cmd")]
     with open(AGENTS_FILE, "w") as f:
         json.dump(clean, f, indent=2)
+
+
+# ---- pane names ---------------------------------------------------------
+# tmux keeps session names in memory only, so a tmux server crash loses every
+# name you have given a pane.  We mirror them to disk, keyed by Claude session
+# id, so recovery can put each conversation back under the name you knew it by.
+
+PANE_NAMES_FILE = os.path.join(CONFIG_DIR, "pane-names.json")
+_PANE_NAMES_MAX = 200                    # keep the file from growing without end
+
+
+def load_pane_names() -> dict:
+    """sessionId -> last known tmux pane name."""
+    if os.path.exists(PANE_NAMES_FILE):
+        try:
+            d = json.load(open(PANE_NAMES_FILE))
+            if isinstance(d, dict):
+                return {k: v for k, v in d.items() if isinstance(v, str)}
+        except Exception:
+            pass
+    return {}
+
+
+def remember_pane_names(pairs) -> None:
+    """Record (sessionId, pane name) pairs.  Cheap no-op when nothing changed.
+
+    Called from the session-listing path, which the UI polls, so names set with
+    plain `tmux rename-session` are captured too — not just ones set in the UI.
+    """
+    pairs = [(s, n) for s, n in pairs if s and n]
+    if not pairs:
+        return
+    cur = load_pane_names()
+    if all(cur.get(s) == n for s, n in pairs):
+        return                                       # nothing new to persist
+    cur.update(dict(pairs))
+    if len(cur) > _PANE_NAMES_MAX:                   # drop oldest insertions
+        cur = dict(list(cur.items())[-_PANE_NAMES_MAX:])
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        tmp = PANE_NAMES_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cur, f, indent=2)
+        os.replace(tmp, PANE_NAMES_FILE)             # atomic; never a torn file
+    except OSError:
+        pass                                         # a name is not worth an error
 
 
 def sudo_enabled() -> bool:
