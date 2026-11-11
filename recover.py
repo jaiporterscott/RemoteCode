@@ -238,8 +238,7 @@ def recover(dry_run: bool = False, lookback_hours=None, projects=None):
     action ∈ {restored, planned, exists, skipped-live, error}
     """
     projects = config.load_projects() if projects is None else projects
-    agent = config.agent_by_key("claude") or {"cmd": "claude"}
-    cmd = agent["cmd"]
+    agent = config.agent_by_key("claude") or {"cmd": "claude", "provider": "claude"}
 
     live = set(cd.live_sessions().keys())
     cands = candidates(projects, lookback_hours=lookback_hours, exclude=live)[:_cap()]
@@ -265,7 +264,8 @@ def recover(dry_run: bool = False, lookback_hours=None, projects=None):
             results.append(rec)
             continue
         # login shell so PATH/aliases resolve; exec so the pane pid becomes claude
-        launch = f"exec {cmd} --resume {c['session_id']}"
+        launch = "exec " + config.claude_launch_cmd(
+            agent, name, c["cwd"], f"--resume {c['session_id']}")
         try:
             r = subprocess.run(
                 ["tmux", "new-session", "-d", "-s", name, "-c", c["cwd"],

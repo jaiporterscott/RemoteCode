@@ -361,8 +361,9 @@ def api_create(body: dict = Body(...)):
         raise HTTPException(400, f"cwd missing: {cwd}")
     name = _next_name(agentkey)
     # login shell so PATH/aliases resolve; exec so the pane pid becomes the agent
+    launch = config.claude_launch_cmd(agent, name, cwd)
     r = tmux("new-session", "-d", "-s", name, "-c", cwd,
-             "bash", "-lc", f"exec {agent['cmd']}")
+             "bash", "-lc", f"exec {launch}")
     if r.returncode != 0:
         raise HTTPException(500, f"tmux: {r.stderr.strip()}")
     return {"name": name}
