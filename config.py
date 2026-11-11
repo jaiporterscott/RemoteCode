@@ -13,8 +13,10 @@ Config files (optional) live in  $XDG_CONFIG_HOME/remotecode  (default ~/.config
   password        the generated basic-auth password
   agents.json     override the built-in agent registry
   pane-names.json sessionId -> pane name, so names survive a tmux server crash
+Claude sessions start with Remote Control on (REMOTECODE_REMOTE_CONTROL=0 turns it
+off) and their folder pre-trusted in ~/.claude.json.
 """
-import os, json, shutil, secrets
+import os, json, shlex, shutil, secrets
 
 HOME = os.path.expanduser("~")
 HOST = os.environ.get("REMOTECODE_HOST", "127.0.0.1")
@@ -146,6 +148,66 @@ def agent_by_key(key: str):
 def agent_comm(a: dict) -> str:
     """The process name (comm) to look for when detecting this agent in a pane."""
     return os.path.basename(a["cmd"].split()[0])
+
+
+# ---- Claude Code launch prep ---------------------------------------------
+# A fresh `claude` in a folder it has never seen stops on the "Do you trust the
+# files in this folder?" dialog, so a session started from the phone would sit
+# there until someone answers it. RemoteCode only offers folders the operator
+# configured, so it records them as trusted before launching. Claude sessions
+# also start with Remote Control on, named after the pane, so they appear under
+# Remote Control in the Claude apps.
+
+CLAUDE_JSON = os.path.join(HOME, ".claude.json")
+
+
+def remote_control_enabled() -> bool:
+    return os.environ.get("REMOTECODE_REMOTE_CONTROL", "1").lower() not in ("0", "false", "no")
+
+
+def trust_claude_dir(path: str) -> bool:
+    """Mark `path` as trusted in ~/.claude.json. Returns True if it now is.
+
+    Claude rewrites this file itself, so: re-read right before writing, change
+    only our one key, and swap the file in atomically."""
+    path = os.path.realpath(path)
+    try:
+        with open(CLAUDE_JSON) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):
+        return False                 # unreadable/half-written: never clobber it
+    proj = data.setdefault("projects", {}).setdefault(path, {})
+    if proj.get("hasTrustDialogAccepted") is True:
+        return True
+    proj["hasTrustDialogAccepted"] = True
+    tmp = f"{CLAUDE_JSON}.remotecode-{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        if os.path.exists(CLAUDE_JSON):
+            shutil.copymode(CLAUDE_JSON, tmp)
+        os.replace(tmp, CLAUDE_JSON)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def claude_launch_cmd(agent: dict, name: str, cwd: str, extra: str = "") -> str:
+    """The shell command for a Claude pane: trusted cwd + Remote Control named
+    after the pane. Non-Claude agents get their cmd back unchanged."""
+    cmd = agent["cmd"]
+    if agent.get("provider") != "claude":
+        return f"{cmd} {extra}".strip()
+    trust_claude_dir(cwd)
+    if remote_control_enabled() and "--remote-control" not in cmd:
+        cmd += f" --remote-control {shlex.quote(name)}"
+    return f"{cmd} {extra}".strip()
 
 
 # ---- working directories ("projects") -----------------------------------
